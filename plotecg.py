@@ -11,7 +11,8 @@ import matplotlib.pyplot as plt
 import ishne
 from pycuda.compiler import SourceModule
 import sys
-from timer import Timer
+import timer
+timer.driver = cuda
 
 with open("plotecg.cu") as wavelet_file:
     mod = SourceModule(wavelet_file.read())
@@ -60,15 +61,15 @@ def preprocess_lead(d_lead, lead_size, d_wavelet,
                     wavelet_len, threshold_value):
     global runtime
 
-    with Timer() as tot:
-        with Timer() as calc:
+    with timer.Timer() as tot:
+        with timer.Timer() as calc:
             # Kernel Parameters
             threads_per_block = 200
             num_blocks = lead_size / threads_per_block
         if verbose:
             print "Kernel Size Calculation:", calc.interval
 
-        with Timer() as corr:
+        with timer.Timer() as corr:
 
             # correlate lead with wavelet
             correlated = cuda.mem_alloc(lead_size * 4)
@@ -79,7 +80,7 @@ def preprocess_lead(d_lead, lead_size, d_wavelet,
                                          block=(threads_per_block, 1, 1))
             cuda.Context.synchronize()
 
-        with Timer() as thresh:
+        with timer.Timer() as thresh:
             # threshold correlated lead
             thresholded_signal = cuda.mem_alloc(lead_size * 4)
             threshold(thresholded_signal, correlated,
@@ -99,7 +100,7 @@ def preprocess_lead(d_lead, lead_size, d_wavelet,
 
 def preprocess(d_lead1, d_lead2, d_lead3, lead_size,
                wavelet, threshold_value):
-    with Timer() as wav:
+    with timer.Timer() as wav:
         d_wavelet = cuda.to_device(wavelet)
         wavelet_len = len(wavelet)
     d_tlead1 = preprocess_lead(d_lead1,
@@ -130,7 +131,7 @@ def preprocess(d_lead1, d_lead2, d_lead3, lead_size,
     return (d_merged_lead, lead_len)
 
 def synchronize_and_merge(d_tlead1, d_tlead2, d_tlead3, length):
-    with Timer() as sm:
+    with timer.Timer() as sm:
         # synchronize
         (offset1, offset2, offset3, lead_len) = synchronize(d_tlead1,
                                                             d_tlead2,
@@ -290,16 +291,16 @@ def plot_hr(ecg_filename):
 
     hat = generate_hat(num_samples)
 
-    with Timer() as transfer:
+    with timer.Timer() as transfer:
         d_lead1, d_lead2, d_lead3, length = transfer_leads(*ecg.leads)
     if verbose:
         print "Transfer:", transfer.interval
 
-    with Timer() as pre_time:
+    with timer.Timer() as pre_time:
         d_mlead_hat, length_hat = preprocess(d_lead1, d_lead2, d_lead3,
                                              length, hat, 1.0)
     
-    with Timer() as time:
+    with timer.Timer() as time:
         y = get_heartbeat(d_mlead_hat, length_hat)
 
     if verbose:
