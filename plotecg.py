@@ -12,7 +12,6 @@ import ishne
 from pycuda.compiler import SourceModule
 import sys
 from timer import Timer
-import computedb
 
 with open("plotecg.cu") as wavelet_file:
     mod = SourceModule(wavelet_file.read())
@@ -50,50 +49,6 @@ def generate_hat(num_samples):
                 numpy.float32((maxval - minval)/num_samples),
                 grid=(1, 1), block=(num_samples, 1, 1))
     return hat
-
-def generate_qrs_wavelet(lead, seed_wavelet):
-    #SJM
-    start_clip=0
-    lead_clip = numpy.asarray(lead[start_clip:start_clip+2000],numpy.float32)
-    lead_clip_size=len(lead_clip)
-
-    # Kernel Parameters
-    threads_per_block = 200
-    num_blocks = lead_clip_size / threads_per_block
-
-    correlated_clip = numpy.zeros(lead_clip_size).astype(numpy.float32)
-    thresholded_clip_signal = numpy.zeros(lead_clip_size).astype(numpy.int32)
-    edge_clip_signal=numpy.zeros(lead_clip_size).astype(numpy.int32)
-
-    cross_correlate_with_wavelet(cuda.Out(correlated_clip),
-                                 cuda.In(lead_clip),
-                                 cuda.In(seed_wavelet),
-                                 numpy.int32(lead_clip_size),
-                                 numpy.int32(len(seed_wavelet)),
-                                 grid=(num_blocks, 1),
-                                 block=(threads_per_block, 1, 1))
-
-    threshold(cuda.Out(thresholded_clip_signal),
-              cuda.In(correlated_clip),
-              numpy.float32(1.0),
-              grid=(num_blocks, 1),
-              block=(threads_per_block, 1, 1))
-
-    edge_detect(cuda.Out(edge_clip_signal),
-                cuda.In(thresholded_clip_signal),
-                grid=(num_blocks, 1),
-                block=(threads_per_block, 1, 1))
-
-    first_r_peak=0
-    for x in xrange(2000):
-       if(edge_clip_signal[x]==1):
-           first_r_peak=x
-           break
-
-    # This should be sensitive to the sampling rate
-    qrs = lead[first_r_peak-6:first_r_peak+10]
-    auto_pick_qrs_wavelet = numpy.asarray(qrs, numpy.float32)
-    return auto_pick_qrs_wavelet
 
 def median_filter(out_array, in_ary, grid, block):
     padded = numpy.pad(in_ary, (1, 1), mode="edge")
@@ -334,7 +289,6 @@ def plot_hr(ecg_filename):
     num_samples = int(0.08 * ecg.sampling_rate)
 
     hat = generate_hat(num_samples)
-    qrs_wavelet = generate_qrs_wavelet(ecg.leads[0], hat)
 
     with Timer() as transfer:
         d_lead1, d_lead2, d_lead3, length = transfer_leads(*ecg.leads)
@@ -342,53 +296,29 @@ def plot_hr(ecg_filename):
         print "Transfer:", transfer.interval
 
     with Timer() as pre_time:
-        if verbose:
-            print "Mexican Hat Wavelet:"
-            print "--------------------"
         d_mlead_hat, length_hat = preprocess(d_lead1, d_lead2, d_lead3,
                                              length, hat, 1.0)
-        if verbose:
-            print "QRS Wavelet:"
-            print "------------"
-        d_mlead_qrs, length_qrs = preprocess(d_lead1, d_lead2, d_lead3,
-                                             length, qrs_wavelet, 2.3)
-        if verbose:
-            print "DB4 Wavelet:"
-            print "------------"
-        d_mlead_db4, length_db4 = preprocess(d_lead1, d_lead2, d_lead3,
-                                             length, computedb.wavelet, 3.5)
-
-        length = min(length_hat, length_qrs, length_db4)
-
-        if verbose:
-            print "Combining Leads:"
-            print "----------------"
-        
-        final_lead, final_length = synchronize_and_merge(d_mlead_hat,
-                                                         d_mlead_qrs,
-                                                         d_mlead_db4,
-                                                         length)
     
     with Timer() as time:
-        y = get_heartbeat(final_lead, final_length)
+        y = get_heartbeat(d_mlead_hat, length_hat)
 
     if verbose:
-        print "Total Preprocess:", pre_time.interval
+        print "Hat Preprocess:", pre_time.interval
         print "RR time:", time.interval
 
     print "HR processed in", pre_time.interval + time.interval + \
           transfer.interval, "seconds"
-    print "\nTime Breakdown:"
-    print "\tPython Overhead:", pre_time.interval - runtime, "seconds"
-    print "\t\t(Mostly function calls to helper functions)"
-    print "\tTransfer Time:", transfer.interval, "seconds"
-    print "\t\t(Transfer 3 leads to GPU)"
-    print "\tHR and Post Processing:", time.interval, "seconds"
-    print "\t\t(Edge Detection, Distance Between Peaks, Post Filering, "\
-          "Transfer from GPU)"
-    print "\tLead Processing:", runtime, "seconds"
-    print "\t\t(Cross Correlation, Thresholding, Synchronization & Merging"\
-          " for 3 leads & 3 wavelets)"
+    if verbose:
+        print "\nTime Breakdown:"
+        print "\tPython Overhead:", pre_time.interval - runtime, "seconds"
+        print "\t\t(Mostly function calls to helper functions)"
+        print "\tTransfer Time:", transfer.interval, "seconds"
+        print "\t\t(Transfer 3 leads to GPU)"
+        print "\tHR and Post Processing:", time.interval, "seconds"
+        print "\t\t(Edge Detection, Distance Between Peaks, Post Filering, "\
+              "Transfer from GPU)"
+        print "\tLead Processing:", runtime, "seconds"
+        print "\t\t(Cross Correlation, Thresholding, Synchronization & Merging"
 
     x = numpy.linspace(0, 23, num=len(y))
     plt.figure(1)
