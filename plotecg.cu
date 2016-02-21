@@ -127,11 +127,15 @@ int_3_median_value(
 __global__ void
 int_3_median_reduction(
   int * out_signal,
-  int * in_signal)
+  int * out_index,
+  int * in_signal,
+  int * in_index)
 {
   // Reduce 3-1 by getting the median of 3 element chunks
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
-  out_signal[tid] = int_3_median_value(in_signal, tid * 3);
+  int median_index = int_3_median_index(in_signal, tid * 3);
+  out_signal[tid] = in_signal[tid * 3 + median_index];
+  out_index[tid] = in_index[tid * 3 + median_index];
 }
 
 // Assumes that the input has been padded with the last element 2 times

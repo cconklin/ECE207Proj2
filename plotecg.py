@@ -206,35 +206,47 @@ def get_heartbeat(d_lead, length):
              numpy.int32(len(indecies)),
              grid=(num_blocks / 64, 1), block=(threads_per_block, 1, 1))
 
+    index = cuda.from_device_like(d_index, numpy.zeros(length / 64).astype(numpy.int32))
+    index = index[full_rr_signal != 0]
     rr_signal = full_rr_signal[full_rr_signal != 0]
 
     # Filter
 
     # Reject the obvious outliers
     smoothed_rr_signal = rr_signal[rr_signal < 120]
+    smoothed_index = index[rr_signal < 120]
     smoothed_rr_signal = smoothed_rr_signal[smoothed_rr_signal > 10]
+    smoothed_index = smoothed_index[smoothed_rr_signal > 10]
     smoothed_rr_signal2 = numpy.copy(smoothed_rr_signal)
+    smoothed_index2 = numpy.copy(smoothed_index)
 
     # Median Reduce + Filter
     for i in range(3):
         if len(smoothed_rr_signal2) > 2187 * 3:
             median(cuda.Out(smoothed_rr_signal2),
+                   cuda.Out(smoothed_index2),
                    cuda.In(numpy.copy(smoothed_rr_signal2)),
+                   cuda.In(numpy.copy(smoothed_index2)),
                    grid=(len(smoothed_rr_signal2) / 2187, 1),
                    block=(729, 1, 1))
         elif 1024 < len(smoothed_rr_signal2) <= 2187 * 3:
             median(cuda.Out(smoothed_rr_signal2),
+                   cuda.Out(smoothed_index2),
                    cuda.In(numpy.copy(smoothed_rr_signal2)),
+                   cuda.In(numpy.copy(smoothed_index2)),
                    grid=(len(smoothed_rr_signal2) / 729, 1),
                    block=(81, 1, 1))
         else:
             median(cuda.Out(smoothed_rr_signal2),
+                   cuda.Out(smoothed_index2),
                    cuda.In(numpy.copy(smoothed_rr_signal2)),
+                   cuda.In(numpy.copy(smoothed_index2)),
                    grid=(1, 1),
                    block=(len(smoothed_rr_signal2), 1, 1))
         # Since we just reduced the size of the array by a factor of 3,
         # we also need to reduce the size of the output vector
         smoothed_rr_signal2 = smoothed_rr_signal2[:len(smoothed_rr_signal2)/3]
+        smoothed_index2 = smoothed_index2[:len(smoothed_index2)/3]
 
         if len(smoothed_rr_signal2) > 2187 * 3:
             median_filter(smoothed_rr_signal2,
@@ -255,7 +267,7 @@ def get_heartbeat(d_lead, length):
     # Use a better median filter for the last bit
     smoothed_rr_signal2 = scipy.signal.medfilt(smoothed_rr_signal2, (21,))
 
-    return smoothed_rr_signal2
+    return smoothed_rr_signal2[smoothed_index2 > 200], (smoothed_index2[smoothed_index2 > 200]) / (float(ecg.sampling_rate * 3600))
 
 def read_ISHNE(ecg_filename):
     # Read the ISHNE file
@@ -301,7 +313,7 @@ def plot_hr(ecg_filename):
                                              length, hat, 1.0)
     
     with timer.Timer() as time:
-        y = get_heartbeat(d_mlead_hat, length_hat)
+        y, x = get_heartbeat(d_mlead_hat, length_hat)
 
     if verbose:
         print "Hat Preprocess:", pre_time.interval
@@ -321,7 +333,7 @@ def plot_hr(ecg_filename):
         print "\tLead Processing:", runtime, "seconds"
         print "\t\t(Cross Correlation, Thresholding, Synchronization & Merging"
 
-    x = numpy.linspace(0, 23, num=len(y))
+    cuda.Context.synchronize()
     plt.figure(1)
     plt.plot(x, y)
     plt.title("ECG - RR")
