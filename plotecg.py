@@ -7,6 +7,7 @@ import pycuda.autoinit
 import pycuda.driver as cuda
 import numpy
 import scipy.signal
+import scipy.stats
 import matplotlib.pyplot as plt
 import ishne
 from pycuda.compiler import SourceModule
@@ -28,6 +29,56 @@ index_of_peak = mod.get_function("index_of_peak")
 merge_leads = mod.get_function("merge_leads")
 
 runtime = 0.0
+
+def compress_leads_old(lead1, lead2, lead3):
+    initial_length = len(lead1)
+    # Work on a small chunk
+    chunk = ecg.sampling_rate * 1
+    chunk1 = lead1[:chunk]
+    chunk2 = lead2[:chunk]
+    chunk3 = lead3[:chunk]
+    # Synchronizing w/o correlating first can cause a bunch of problems
+    (of1, of2, of3, length) = cpu_synchronize(-chunk1, -chunk2, -chunk3, initial_length)
+    # Resize the leads
+    dlength = length - initial_length
+    lead1 = lead1[of1:]
+    chunk1 = chunk1[of1:dlength+of1-1]
+    chunk2 = chunk2[of2:dlength+of2-1]
+    chunk3 = chunk3[of3:dlength+of3-1]
+    # This doesn't produce anything of value, since the reconstructed signal has no more information than lead1
+    # Acquire data to reconstruct lead2 & lead3 from lead1
+    lr12 = scipy.stats.linregress(chunk1, chunk2)
+    lr13 = scipy.stats.linregress(chunk1, chunk3)
+    # Compress lead1
+    samples = numpy.linspace(0, length-1, num=length)
+    threshold = ((lead1 > 0.1) | (lead1 < -0.1))
+    tsamples = samples[threshold]
+    tlead1 = lead1[threshold]
+    tlength = len(tsamples)
+    return tsamples, tlead1, tlength, lr12.slope, lr12.intercept, lr13.slope, lr13.intercept
+
+def compress_leads(lead1, lead2, lead3):
+    initial_length = len(lead1)
+    # Work on a small chunk
+    chunk = ecg.sampling_rate * 1
+    chunk1 = lead1[:chunk]
+    chunk2 = lead2[:chunk]
+    chunk3 = lead3[:chunk]
+    # Synchronizing w/o correlating first can cause a bunch of problems
+    (of1, of2, of3, length) = cpu_synchronize(-chunk1, -chunk2, -chunk3, initial_length)
+    # Resize the leads
+    lead1 = lead1[of1:]
+    lead2 = lead2[of2:]
+    lead3 = lead3[of3:]
+    # Compress lead1
+    samples = numpy.linspace(0, length-1, num=length)
+    threshold = ((lead1 > 0.1) | (lead1 < -0.1))
+    tsamples = samples[threshold]
+    tlead1 = lead1[threshold]
+    tlead2 = lead2[threshold]
+    tlead3 = lead3[threshold]
+    tlength = len(tsamples)
+    return tsamples, tlead1, tlead2, tlead3, tlength
 
 def transfer_leads(*h_leads):
     length = len(h_leads[0])
@@ -148,6 +199,18 @@ def synchronize_and_merge(d_tlead1, d_tlead2, d_tlead3, length):
         print "Synchronize & Merge:", sm.interval
 
     return (d_merged_lead, lead_len)    
+
+def cpu_synchronize(lead1, lead2, lead3, length):
+    start1 = numpy.argmax(lead1)
+    start2 = numpy.argmax(lead2)
+    start3 = numpy.argmax(lead3)
+    minstart = min(start1, start2, start3)
+    maxstart = max(start1, start2, start3)
+    offset1 = start1 - minstart
+    offset2 = start2 - minstart
+    offset3 = start3 - minstart
+    new_length = length - (maxstart - minstart)
+    return (offset1, offset2, offset3, new_length)
 
 def synchronize(d_tlead1, d_tlead2, d_tlead3, length):
     # Number of points to use to synchronize
