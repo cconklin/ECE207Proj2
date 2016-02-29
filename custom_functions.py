@@ -1,3 +1,5 @@
+import ctypes
+import numpy
 custom_functions = ctypes.CDLL("custom_functions.o")
 
 def compress_ecg(lead1, lead2, lead3, threshold=0.5):
