@@ -29,3 +29,12 @@ def compress_ecg(lead1, lead2, lead3, threshold=0.5):
     output3 = output3[:output_len.value]
     samples = samples[:output_len.value]
     return samples, output1, output2, output3, output_len.value
+
+def turning_point_compression(lead):
+    lead_len = len(lead)
+    output = numpy.zeros(lead_len / 2).astype(numpy.float32)
+    inputP = lead.astype(numpy.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+    outputP = output.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+    input_len = ctypes.c_int(lead_len)
+    custom_functions.turning_point_compress(outputP, inputP, input_len)
+    return output

@@ -27,3 +27,19 @@ void threshold_ecg(float * output1,
   }
   * output_len = idx;
 }
+
+void turning_point_compress(float * output,
+                            float * input,
+                            int input_len)
+{
+  int idx;
+  int output_len = input_len / 2;
+  output[0] = input[0];
+  for (idx = 1; idx < output_len; idx++) {
+    if ((input[2*idx]-output[idx-1])*(input[2*idx+1]-input[2*idx]) < 0) {
+      output[idx] = input[2*idx];
+    } else {
+      output[idx] = input[2*idx+1];
+    }
+  }
+}
