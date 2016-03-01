@@ -13,6 +13,7 @@ import ishne
 from pycuda.compiler import SourceModule
 import sys
 import timer
+import custom_functions
 timer.driver = cuda
 
 with open("plotecg.cu") as wavelet_file:
@@ -57,7 +58,7 @@ def compress_leads_old(lead1, lead2, lead3):
     tlength = len(tsamples)
     return tsamples, tlead1, tlength, lr12.slope, lr12.intercept, lr13.slope, lr13.intercept
 
-def compress_leads(lead1, lead2, lead3):
+def compress_leads_numpy(lead1, lead2, lead3):
     initial_length = len(lead1)
     # Work on a small chunk
     chunk = ecg.sampling_rate * 1
@@ -67,9 +68,9 @@ def compress_leads(lead1, lead2, lead3):
     # Synchronizing w/o correlating first can cause a bunch of problems
     (of1, of2, of3, length) = cpu_synchronize(-chunk1, -chunk2, -chunk3, initial_length)
     # Resize the leads
-    lead1 = lead1[of1:]
-    lead2 = lead2[of2:]
-    lead3 = lead3[of3:]
+    lead1 = lead1[of1:][:length]
+    lead2 = lead2[of2:][:length]
+    lead3 = lead3[of3:][:length]
     # Compress lead1
     samples = numpy.linspace(0, length-1, num=length)
     threshold = ((lead1 > 0.1) | (lead1 < -0.1))
@@ -79,6 +80,23 @@ def compress_leads(lead1, lead2, lead3):
     tlead3 = lead3[threshold]
     tlength = len(tsamples)
     return tsamples, tlead1, tlead2, tlead3, tlength
+
+def compress_leads(lead1, lead2, lead3, threshold=0.12):
+    initial_length = len(lead1)
+    # Work on a small chunk
+    chunk = ecg.sampling_rate * 1
+    chunk1 = lead1[:chunk]
+    chunk2 = lead2[:chunk]
+    chunk3 = lead3[:chunk]
+    # Synchronizing w/o correlating first can cause a bunch of problems
+    (of1, of2, of3, length) = cpu_synchronize(-chunk1, -chunk2, -chunk3, initial_length)
+    # Resize the leads
+    lead1 = lead1[of1:][:length].astype(numpy.float32)
+    lead2 = lead2[of2:][:length].astype(numpy.float32)
+    lead3 = lead3[of3:][:length].astype(numpy.float32)
+    # Compress lead1
+    samples = numpy.zeros(length).astype(numpy.float32)
+    return custom_functions.compress_ecg(lead1, lead2, lead3, threshold=threshold)
 
 def transfer_leads(*h_leads):
     length = len(h_leads[0])
