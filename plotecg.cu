@@ -164,6 +164,36 @@ index_of_peak(
 }
 
 __global__ void
+nonzero(
+  int * out_ary,
+  int * in_ary,
+  int length)
+{
+  int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  if (idx < length) {
+    out_ary[idx] = in_ary[idx] != 0;
+  }
+}
+
+__global__ void
+scatter(
+  int * out_ary,
+  int * values,
+  int * indecies,
+  int * present,
+  int length)
+{
+  int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  int new_idx;
+  if (idx < length) {
+    if (present[idx]) {
+      new_idx = indecies[idx];
+      out_ary[new_idx] = values[idx];
+    }
+  }
+}
+
+__global__ void
 get_rr(
   int * out_signal,
   int * in_signal,

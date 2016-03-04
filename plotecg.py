@@ -28,6 +28,8 @@ median = mod.get_function("int_3_median_reduction")
 get_rr = mod.get_function("get_rr")
 index_of_peak = mod.get_function("index_of_peak")
 merge_leads = mod.get_function("merge_leads")
+nonzero = mod.get_function("nonzero")
+scatter = mod.get_function("scatter")
 
 runtime = 0.0
 
@@ -349,6 +351,25 @@ def get_heartbeat(d_lead, length):
     smoothed_rr_signal2 = scipy.signal.medfilt(smoothed_rr_signal2, (21,))
 
     return smoothed_rr_signal2[smoothed_index2 > 200], (smoothed_index2[smoothed_index2 > 200]) / (float(ecg.sampling_rate * 3600))
+
+def compact_sparse(dev_array, length):
+    scan_result = cuda.mem_alloc(length * 4)
+    contains_result = cuda.mem_alloc(length * 4)
+    # Size is overkill
+    result = cuda.mem_alloc(length * 4)
+    block_size = 64
+    if length % block_size:
+        grid_size = (length / block_size) + 1
+    else:
+        grid_size = (length / block_size)
+    grid = (grid_size, 1)
+    block = (block_size, 1, 1)
+    nonzero(contains_result, dev_array, numpy.int32(length), grid=grid, block=block)
+    custom_functions.exclusive_scan(scan_result, contains_result, length)
+    scatter(result, dev_array, scan_result, contains_result, numpy.int32(length), grid=grid, block=block)
+    scan_result.free()
+    contains_result.free()
+    return result
 
 def read_ISHNE(ecg_filename):
     # Read the ISHNE file
