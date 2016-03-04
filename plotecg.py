@@ -355,8 +355,6 @@ def get_heartbeat(d_lead, length):
 def compact_sparse(dev_array, length):
     scan_result = cuda.mem_alloc(length * 4)
     contains_result = cuda.mem_alloc(length * 4)
-    # Size is overkill
-    result = cuda.mem_alloc(length * 4)
     block_size = 64
     if length % block_size:
         grid_size = (length / block_size) + 1
@@ -366,10 +364,12 @@ def compact_sparse(dev_array, length):
     block = (block_size, 1, 1)
     nonzero(contains_result, dev_array, numpy.int32(length), grid=grid, block=block)
     custom_functions.exclusive_scan(scan_result, contains_result, length)
+    new_length = custom_functions.index(scan_result, length-1) + 1
+    result = cuda.mem_alloc(new_length * 4)
     scatter(result, dev_array, scan_result, contains_result, numpy.int32(length), grid=grid, block=block)
     scan_result.free()
     contains_result.free()
-    return result
+    return result, new_length
 
 def read_ISHNE(ecg_filename):
     # Read the ISHNE file

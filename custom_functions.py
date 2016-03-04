@@ -53,3 +53,11 @@ def exclusive_scan(out_device_ary, in_device_ary, length):
     out_p = ctypes.cast(int(out_device_ary), ctypes.POINTER(ctypes.c_int))
     c_length = ctypes.c_int(length)
     custom_functions.exclusive_scan(out_p, in_p, c_length)
+
+def index(device_ary, idx):
+    d_ary = ctypes.cast(int(device_ary), ctypes.POINTER(ctypes.c_int))
+    c_idx = ctypes.c_int(idx)
+    c_val = ctypes.c_int(0)
+    c_val_p = ctypes.pointer(c_val)
+    custom_functions.device_index(d_ary, c_val_p, c_idx)
+    return c_val.value

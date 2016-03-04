@@ -2,6 +2,7 @@
 #include <thrust/device_ptr.h>
 #include <thrust/device_vector.h>
 #include <thrust/scan.h>
+#include "cuda_runtime.h"
 
 extern "C" {
   void threshold_ecg(float * output1,
@@ -59,5 +60,10 @@ extern "C" {
     thrust::device_ptr<int> out_p = thrust::device_pointer_cast(out);  
     thrust::exclusive_scan(in_p, in_p+len, out_p);
   }
+
+  void device_index(int * ary, int * last_val, int idx) {
+    cudaMemcpy(last_val, & ary[idx], sizeof(int), cudaMemcpyDeviceToHost);
+  }
+
 }
 
