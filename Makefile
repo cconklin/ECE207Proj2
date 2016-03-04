@@ -1,2 +1,2 @@
-custom_functions.o: custom_functions.c
-	gcc $^ -o $@ -lm -shared -fPIC -O3
+custom_functions.o: custom_functions.cu
+	nvcc $^ -o $@ -lm -shared -O3

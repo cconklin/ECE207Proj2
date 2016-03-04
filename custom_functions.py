@@ -41,3 +41,15 @@ def turning_point_compression(lead, times=1):
         inputP = outputP
         lead_len = lead_len / 2
     return output[:lead_len]
+
+def inclusive_scan(out_device_ary, in_device_ary, length):
+    in_p = ctypes.cast(int(in_device_ary), ctypes.POINTER(ctypes.c_int))
+    out_p = ctypes.cast(int(out_device_ary), ctypes.POINTER(ctypes.c_int))
+    c_length = ctypes.c_int(length)
+    custom_functions.inclusive_scan(out_p, in_p, c_length)
+
+def exclusive_scan(out_device_ary, in_device_ary, length):
+    in_p = ctypes.cast(int(in_device_ary), ctypes.POINTER(ctypes.c_int))
+    out_p = ctypes.cast(int(out_device_ary), ctypes.POINTER(ctypes.c_int))
+    c_length = ctypes.c_int(length)
+    custom_functions.exclusive_scan(out_p, in_p, c_length)
