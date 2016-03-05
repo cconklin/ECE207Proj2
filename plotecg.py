@@ -30,6 +30,7 @@ index_of_peak = mod.get_function("index_of_peak")
 merge_leads = mod.get_function("merge_leads")
 nonzero = mod.get_function("nonzero")
 scatter = mod.get_function("scatter")
+to_float = mod.get_function("to_float")
 
 runtime = 0.0
 

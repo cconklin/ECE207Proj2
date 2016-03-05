@@ -1,3 +1,4 @@
+#include "cuda_fp16.h"
 #define PI_QROOT 1.331325547571923
 
 __device__ __host__ float mexican_hat_point(float sigma, float t) {
@@ -13,6 +14,13 @@ __global__ void mexican_hat(float * out_signal, float sigma, float t_start, floa
   int sample_number = threadIdx.x + blockIdx.x * blockDim.x;
   float t = t_start + ((float) sample_number) * t_step;
   out_signal[sample_number] = mexican_hat_point(sigma, t);
+}
+
+__global__ void to_float(float * out, half * in, int length) {
+  int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  if (idx < length) {
+    out[idx] = __half2float(in[idx]);
+  }
 }
 
 __device__ __host__ void
