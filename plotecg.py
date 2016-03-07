@@ -31,6 +31,7 @@ merge_leads = mod.get_function("merge_leads")
 nonzero = mod.get_function("nonzero")
 scatter = mod.get_function("scatter")
 to_float = mod.get_function("to_float")
+get_compact_rr = mod.get_function("get_compact_rr")
 
 runtime = 0.0
 
@@ -269,8 +270,6 @@ def get_heartbeat(d_lead, length):
     threads_per_block = 200
     num_blocks = length / threads_per_block
 
-    # Allocate output
-    full_rr_signal = numpy.zeros(length / 64).astype(numpy.int32)
 
     # Get RR
     window_size = 8
@@ -279,18 +278,32 @@ def get_heartbeat(d_lead, length):
     edge_detect(edge_signal, d_lead,
                 grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
 
-    indecies = numpy.zeros(length / 64).astype(numpy.int32)
-    masks = cuda.to_device(numpy.zeros(length / 64).astype(numpy.int32))
+    indecies = numpy.zeros(length / 16).astype(numpy.int32)
+    masks = cuda.to_device(numpy.zeros(length / 16).astype(numpy.int32))
     d_index = cuda.to_device(indecies)
     index_of_peak(d_index, masks, edge_signal,
                   grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
 
-    get_rr(cuda.InOut(full_rr_signal), d_index, masks,
-             numpy.int32(window_size), numpy.int32(ecg.sampling_rate),
-             numpy.int32(len(indecies)),
-             grid=(num_blocks / 64, 1), block=(threads_per_block, 1, 1))
+    cd_index, c_length = compact_sparse_with_mask(d_index, masks, length / 16)
 
-    index = cuda.from_device_like(d_index, numpy.zeros(length / 64).astype(numpy.int32))
+    # Allocate output
+    full_rr_signal = numpy.zeros(c_length).astype(numpy.int32)
+
+    num_blocks = (c_length / threads_per_block) + 1
+    get_compact_rr(cuda.InOut(full_rr_signal),
+                   cd_index,
+                   numpy.int32(ecg.sampling_rate),
+                   numpy.int32(c_length),
+                   grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
+
+    # get_rr(cuda.InOut(full_rr_signal), d_index, masks,
+    #          numpy.int32(window_size), numpy.int32(ecg.sampling_rate),
+    #          numpy.int32(len(indecies)),
+    #          grid=(num_blocks / 64, 1), block=(threads_per_block, 1, 1))
+
+    return full_rr_signal, cuda.from_device_like(cd_index, full_rr_signal)
+
+    index = cuda.from_device_like(d_index, numpy.zeros(length / 16).astype(numpy.int32))
     index = index[full_rr_signal != 0]
     rr_signal = full_rr_signal[full_rr_signal != 0]
 
@@ -304,49 +317,49 @@ def get_heartbeat(d_lead, length):
     smoothed_rr_signal2 = numpy.copy(smoothed_rr_signal)
     smoothed_index2 = numpy.copy(smoothed_index)
 
-    # Median Reduce + Filter
-    for i in range(3):
-        if len(smoothed_rr_signal2) > 2187 * 3:
-            median(cuda.Out(smoothed_rr_signal2),
-                   cuda.Out(smoothed_index2),
-                   cuda.In(numpy.copy(smoothed_rr_signal2)),
-                   cuda.In(numpy.copy(smoothed_index2)),
-                   grid=(len(smoothed_rr_signal2) / 2187, 1),
-                   block=(729, 1, 1))
-        elif 1024 < len(smoothed_rr_signal2) <= 2187 * 3:
-            median(cuda.Out(smoothed_rr_signal2),
-                   cuda.Out(smoothed_index2),
-                   cuda.In(numpy.copy(smoothed_rr_signal2)),
-                   cuda.In(numpy.copy(smoothed_index2)),
-                   grid=(len(smoothed_rr_signal2) / 729, 1),
-                   block=(81, 1, 1))
-        else:
-            median(cuda.Out(smoothed_rr_signal2),
-                   cuda.Out(smoothed_index2),
-                   cuda.In(numpy.copy(smoothed_rr_signal2)),
-                   cuda.In(numpy.copy(smoothed_index2)),
-                   grid=(1, 1),
-                   block=(len(smoothed_rr_signal2), 1, 1))
-        # Since we just reduced the size of the array by a factor of 3,
-        # we also need to reduce the size of the output vector
-        smoothed_rr_signal2 = smoothed_rr_signal2[:len(smoothed_rr_signal2)/3]
-        smoothed_index2 = smoothed_index2[:len(smoothed_index2)/3]
-
-        if len(smoothed_rr_signal2) > 2187 * 3:
-            median_filter(smoothed_rr_signal2,
-                          numpy.copy(smoothed_rr_signal2),
-                          grid=(len(smoothed_rr_signal2) / 2187, 1),
-                          block=(729, 1, 1))
-        elif 1024 < len(smoothed_rr_signal2) <= 2187 * 3:
-            median_filter(smoothed_rr_signal2,
-                          numpy.copy(smoothed_rr_signal2),
-                          grid=(len(smoothed_rr_signal2) / 729, 1),
-                          block=(81, 1, 1))
-        else:
-            median_filter(smoothed_rr_signal2,
-                          numpy.copy(smoothed_rr_signal2),
-                          grid=(9, 1),
-                          block=(len(smoothed_rr_signal2) / 9, 1, 1))
+    # # Median Reduce + Filter
+    # for i in range(3):
+    #     if len(smoothed_rr_signal2) > 2187 * 3:
+    #         median(cuda.Out(smoothed_rr_signal2),
+    #                cuda.Out(smoothed_index2),
+    #                cuda.In(numpy.copy(smoothed_rr_signal2)),
+    #                cuda.In(numpy.copy(smoothed_index2)),
+    #                grid=(len(smoothed_rr_signal2) / 2187, 1),
+    #                block=(729, 1, 1))
+    #     elif 1024 < len(smoothed_rr_signal2) <= 2187 * 3:
+    #         median(cuda.Out(smoothed_rr_signal2),
+    #                cuda.Out(smoothed_index2),
+    #                cuda.In(numpy.copy(smoothed_rr_signal2)),
+    #                cuda.In(numpy.copy(smoothed_index2)),
+    #                grid=(len(smoothed_rr_signal2) / 729, 1),
+    #                block=(81, 1, 1))
+    #     else:
+    #         median(cuda.Out(smoothed_rr_signal2),
+    #                cuda.Out(smoothed_index2),
+    #                cuda.In(numpy.copy(smoothed_rr_signal2)),
+    #                cuda.In(numpy.copy(smoothed_index2)),
+    #                grid=(1, 1),
+    #                block=(len(smoothed_rr_signal2), 1, 1))
+    #     # Since we just reduced the size of the array by a factor of 3,
+    #     # we also need to reduce the size of the output vector
+    #     smoothed_rr_signal2 = smoothed_rr_signal2[:len(smoothed_rr_signal2)/3]
+    #     smoothed_index2 = smoothed_index2[:len(smoothed_index2)/3]
+    #
+    #     if len(smoothed_rr_signal2) > 2187 * 3:
+    #         median_filter(smoothed_rr_signal2,
+    #                       numpy.copy(smoothed_rr_signal2),
+    #                       grid=(len(smoothed_rr_signal2) / 2187, 1),
+    #                       block=(729, 1, 1))
+    #     elif 1024 < len(smoothed_rr_signal2) <= 2187 * 3:
+    #         median_filter(smoothed_rr_signal2,
+    #                       numpy.copy(smoothed_rr_signal2),
+    #                       grid=(len(smoothed_rr_signal2) / 729, 1),
+    #                       block=(81, 1, 1))
+    #     else:
+    #         median_filter(smoothed_rr_signal2,
+    #                       numpy.copy(smoothed_rr_signal2),
+    #                       grid=(9, 1),
+    #                       block=(len(smoothed_rr_signal2) / 9, 1, 1))
 
     # Use a better median filter for the last bit
     smoothed_rr_signal2 = scipy.signal.medfilt(smoothed_rr_signal2, (21,))
@@ -354,7 +367,6 @@ def get_heartbeat(d_lead, length):
     return smoothed_rr_signal2[smoothed_index2 > 200], (smoothed_index2[smoothed_index2 > 200]) / (float(ecg.sampling_rate * 3600))
 
 def compact_sparse(dev_array, length):
-    scan_result = cuda.mem_alloc(length * 4)
     contains_result = cuda.mem_alloc(length * 4)
     block_size = 64
     if length % block_size:
@@ -364,12 +376,23 @@ def compact_sparse(dev_array, length):
     grid = (grid_size, 1)
     block = (block_size, 1, 1)
     nonzero(contains_result, dev_array, numpy.int32(length), grid=grid, block=block)
-    custom_functions.exclusive_scan(scan_result, contains_result, length)
-    new_length = custom_functions.index(scan_result, length-1) + 1
+    return compact_sparse_with_mask(dev_array, contains_result, length)
+
+def compact_sparse_with_mask(dev_array, dev_mask, length):
+    block_size = 64
+    if length % block_size:
+        grid_size = (length / block_size) + 1
+    else:
+        grid_size = (length / block_size)
+    grid = (grid_size, 1)
+    block = (block_size, 1, 1)
+    scan_result = cuda.mem_alloc(length * 4)
+    custom_functions.exclusive_scan(scan_result, dev_mask, length)
+    new_length = custom_functions.index(scan_result, length-1)
     result = cuda.mem_alloc(new_length * 4)
-    scatter(result, dev_array, scan_result, contains_result, numpy.int32(length), grid=grid, block=block)
+    scatter(result, dev_array, scan_result, dev_mask, numpy.int32(length), grid=grid, block=block)
     scan_result.free()
-    contains_result.free()
+    dev_mask.free()
     return result, new_length
 
 def read_ISHNE(ecg_filename):
