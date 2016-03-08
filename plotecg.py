@@ -35,13 +35,21 @@ to_float = mod.get_function("to_float")
 runtime = 0.0
 
 def compress_leads(*leads):
-    return tuple(custom_functions.turning_point_compression(lead, times=2)
+    return tuple(custom_functions.turning_point_compression(lead, times=2).astype(numpy.float16)
                  for lead in leads)
 
 def transfer_leads(*h_leads):
     length = len(h_leads[0])
-    return tuple(cuda.to_device(h_lead.astype(numpy.float32))
-                 for h_lead in h_leads) + (length,)
+    result = []
+    grid = ((length / 1024)+1, 1)
+    block = (1024, 1, 1)
+    for h_lead in h_leads:
+        d_lead16 = cuda.to_device(h_lead)
+        d_lead32 = cuda.mem_alloc(h_lead.nbytes * 2)
+        to_float(d_lead32, d_lead16, numpy.int32(length),
+                 grid=grid, block=block)
+        result.append(d_lead32)
+    return tuple(result) + (length,)
 
 def generate_hat(num_samples):
     # The math suggests 16 samples is the width of the QRS complex
@@ -343,14 +351,17 @@ def plot_hr(ecg_filename):
 
     hat = generate_hat(num_samples)
 
+    c_leads = compress_leads(*ecg.leads)
+
     with timer.Timer() as transfer:
-        d_lead1, d_lead2, d_lead3, length = transfer_leads(*ecg.leads)
+        d_lead1, d_lead2, d_lead3, length = transfer_leads(*c_leads)
     if verbose:
         print "Transfer:", transfer.interval
 
     with timer.Timer() as pre_time:
+        # 0.35 is more reasonable for the compressed lead
         d_mlead_hat, length_hat = preprocess(d_lead1, d_lead2, d_lead3,
-                                             length, hat, 1.0)
+                                             length, hat, 0.35)
     
     with timer.Timer() as time:
         y, x = get_heartbeat(d_mlead_hat, length_hat)
