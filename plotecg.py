@@ -290,81 +290,32 @@ def get_heartbeat(d_lead, length):
     full_rr_signal = numpy.zeros(c_length).astype(numpy.int32)
 
     num_blocks = (c_length / threads_per_block) + 1
-    get_compact_rr(cuda.InOut(full_rr_signal),
+    get_compact_rr(cuda.Out(full_rr_signal),
                    cd_index,
                    numpy.int32(ecg.sampling_rate),
                    numpy.int32(c_length),
                    grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
 
-    # get_rr(cuda.InOut(full_rr_signal), d_index, masks,
-    #          numpy.int32(window_size), numpy.int32(ecg.sampling_rate),
-    #          numpy.int32(len(indecies)),
-    #          grid=(num_blocks / 64, 1), block=(threads_per_block, 1, 1))
-
-    return full_rr_signal, cuda.from_device_like(cd_index, full_rr_signal)
-
-    index = cuda.from_device_like(d_index, numpy.zeros(length / 16).astype(numpy.int32))
-    index = index[full_rr_signal != 0]
-    rr_signal = full_rr_signal[full_rr_signal != 0]
+    index = cuda.from_device(cd_index, (c_length,), numpy.int32)
 
     # Filter
 
+    # The first point is always junk
+    full_rr_signal = full_rr_signal[1:]
+    index = index[1:]
+
     # Reject the obvious outliers
-    smoothed_rr_signal = rr_signal[rr_signal < 120]
-    smoothed_index = index[rr_signal < 120]
+    smoothed_rr_signal = full_rr_signal[full_rr_signal < 120]
+    smoothed_index = index[full_rr_signal < 120]
     smoothed_rr_signal = smoothed_rr_signal[smoothed_rr_signal > 10]
     smoothed_index = smoothed_index[smoothed_rr_signal > 10]
     smoothed_rr_signal2 = numpy.copy(smoothed_rr_signal)
     smoothed_index2 = numpy.copy(smoothed_index)
 
-    # # Median Reduce + Filter
-    # for i in range(3):
-    #     if len(smoothed_rr_signal2) > 2187 * 3:
-    #         median(cuda.Out(smoothed_rr_signal2),
-    #                cuda.Out(smoothed_index2),
-    #                cuda.In(numpy.copy(smoothed_rr_signal2)),
-    #                cuda.In(numpy.copy(smoothed_index2)),
-    #                grid=(len(smoothed_rr_signal2) / 2187, 1),
-    #                block=(729, 1, 1))
-    #     elif 1024 < len(smoothed_rr_signal2) <= 2187 * 3:
-    #         median(cuda.Out(smoothed_rr_signal2),
-    #                cuda.Out(smoothed_index2),
-    #                cuda.In(numpy.copy(smoothed_rr_signal2)),
-    #                cuda.In(numpy.copy(smoothed_index2)),
-    #                grid=(len(smoothed_rr_signal2) / 729, 1),
-    #                block=(81, 1, 1))
-    #     else:
-    #         median(cuda.Out(smoothed_rr_signal2),
-    #                cuda.Out(smoothed_index2),
-    #                cuda.In(numpy.copy(smoothed_rr_signal2)),
-    #                cuda.In(numpy.copy(smoothed_index2)),
-    #                grid=(1, 1),
-    #                block=(len(smoothed_rr_signal2), 1, 1))
-    #     # Since we just reduced the size of the array by a factor of 3,
-    #     # we also need to reduce the size of the output vector
-    #     smoothed_rr_signal2 = smoothed_rr_signal2[:len(smoothed_rr_signal2)/3]
-    #     smoothed_index2 = smoothed_index2[:len(smoothed_index2)/3]
-    #
-    #     if len(smoothed_rr_signal2) > 2187 * 3:
-    #         median_filter(smoothed_rr_signal2,
-    #                       numpy.copy(smoothed_rr_signal2),
-    #                       grid=(len(smoothed_rr_signal2) / 2187, 1),
-    #                       block=(729, 1, 1))
-    #     elif 1024 < len(smoothed_rr_signal2) <= 2187 * 3:
-    #         median_filter(smoothed_rr_signal2,
-    #                       numpy.copy(smoothed_rr_signal2),
-    #                       grid=(len(smoothed_rr_signal2) / 729, 1),
-    #                       block=(81, 1, 1))
-    #     else:
-    #         median_filter(smoothed_rr_signal2,
-    #                       numpy.copy(smoothed_rr_signal2),
-    #                       grid=(9, 1),
-    #                       block=(len(smoothed_rr_signal2) / 9, 1, 1))
-
     # Use a better median filter for the last bit
     smoothed_rr_signal2 = scipy.signal.medfilt(smoothed_rr_signal2, (21,))
 
-    return smoothed_rr_signal2[smoothed_index2 > 200], (smoothed_index2[smoothed_index2 > 200]) / (float(ecg.sampling_rate * 3600))
+    return smoothed_rr_signal2, smoothed_index2 / float(ecg.sampling_rate * 3600)
 
 def compact_sparse(dev_array, length):
     contains_result = cuda.mem_alloc(length * 4)
