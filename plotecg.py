@@ -31,6 +31,7 @@ scatter = mod.get_function("scatter")
 to_float = mod.get_function("to_float")
 get_compact_rr = mod.get_function("get_compact_rr")
 moving_average = mod.get_function("moving_average")
+clean_result = mod.get_function("clean_result")
 
 runtime = 0.0
 
@@ -240,32 +241,27 @@ def get_heartbeat(d_lead, length):
     cd_index, c_length = compact_sparse_with_mask(d_index, masks, length / reduce_by)
 
     # Allocate output
-    full_rr_signal = numpy.zeros(c_length).astype(numpy.int32)
+    # full_rr_signal = numpy.zeros(c_length).astype(numpy.int32)
+    dev_rr = cuda.mem_alloc(c_length * 4)
 
     num_blocks = (c_length / threads_per_block) + 1
-    get_compact_rr(cuda.Out(full_rr_signal),
+    get_compact_rr(dev_rr,
                    cd_index,
                    numpy.int32(ecg.sampling_rate / 4),
                    numpy.int32(c_length),
                    grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
 
+    clean_result(dev_rr, numpy.int32(120), numpy.int32(40),
+                 numpy.int32(1), numpy.int32(c_length),
+                 grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
+
+    moving_average_filter(dev_rr, c_length, 250)
+
     index = cuda.from_device(cd_index, (c_length,), numpy.int32)
+    rr = cuda.from_device(dev_rr, (c_length,), numpy.int32)
+    index[0] = index[1]
 
-    # Filter
-
-    # The first point is always junk
-    full_rr_signal = full_rr_signal[1:]
-    index = index[1:]
-
-    # Reject the obvious outliers
-    smoothed_rr_signal = full_rr_signal[full_rr_signal < 120]
-    smoothed_index = index[full_rr_signal < 120]
-    smoothed_rr_signal = smoothed_rr_signal[smoothed_rr_signal > 10]
-    smoothed_index = smoothed_index[smoothed_rr_signal > 10]
-    smoothed_rr_signal2 = numpy.copy(smoothed_rr_signal)
-    smoothed_index2 = numpy.copy(smoothed_index)
-
-    return smoothed_rr_signal2, smoothed_index2 / float(ecg.sampling_rate * 3600)
+    return rr, index / float(ecg.sampling_rate * 3600)
 
 def compact_sparse(dev_array, length):
     contains_result = cuda.mem_alloc(length * 4)

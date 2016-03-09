@@ -238,6 +238,27 @@ get_compact_rr(
     out[tid+1] = (60 * sampling_rate) / (samples[tid+1] - samples[tid]);  
   }
 }
+
+__global__ void
+clean_result(
+  int * ary,
+  int upper,
+  int lower,
+  int start,
+  int length)
+{
+  int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  int val;
+  if (idx < start) {
+    ary[idx] = ary[start];
+  } else if (idx < length) {
+    val = ary[idx];
+    if (val > upper || val < lower) {
+      ary[idx] = ary[idx-1];
+    }
+  }
+}
+
 __global__ void
 get_rr(
   int * out_signal,
