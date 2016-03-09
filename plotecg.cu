@@ -170,7 +170,7 @@ index_of_peak(
   int * in_signal)
 {
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
-  int which_block = tid >> 4; // tid / 16
+  int which_block = tid >> 5; // tid / 32
   if (in_signal[tid]) {
     out_signal[which_block] = tid;
     mask_signal[which_block] = 1;

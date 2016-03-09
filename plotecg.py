@@ -215,19 +215,19 @@ def get_heartbeat(d_lead, length):
 
 
     # Get RR
-    window_size = 8
+    reduce_by = 32
     edge_signal = cuda.mem_alloc(4 * length)
     
     edge_detect(edge_signal, d_lead,
                 grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
 
-    indecies = numpy.zeros(length / 16).astype(numpy.int32)
-    masks = cuda.to_device(numpy.zeros(length / 16).astype(numpy.int32))
+    indecies = numpy.zeros(length / reduce_by).astype(numpy.int32)
+    masks = cuda.to_device(numpy.zeros(length / reduce_by).astype(numpy.int32))
     d_index = cuda.to_device(indecies)
     index_of_peak(d_index, masks, edge_signal,
                   grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
 
-    cd_index, c_length = compact_sparse_with_mask(d_index, masks, length / 16)
+    cd_index, c_length = compact_sparse_with_mask(d_index, masks, length / reduce_by)
 
     # Allocate output
     full_rr_signal = numpy.zeros(c_length).astype(numpy.int32)
