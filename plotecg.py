@@ -343,10 +343,10 @@ def plot_hr(ecg_filename):
     plt.ylabel("Heartrate (BPM)")
     plt.show()
 
-def compress(leads, sampling_rate, out_queue):
+def compress(leads, sampling_rate, filename, out_queue):
     with timer.Timer() as compression_time:
         compressed_leads = compress_leads(*leads)
-    out_queue.put((compressed_leads, sampling_rate / 4))
+    out_queue.put((compressed_leads, sampling_rate / 4, filename))
     print "Compression:", compression_time
 
 def compute(in_queue, out_queue):
@@ -359,23 +359,25 @@ def compute(in_queue, out_queue):
             out_queue.put(True)
             return
         with timer.GPUTimer(cuda) as compute:
-            compressed_leads, sampling_rate = work
+            compressed_leads, sampling_rate, filename = work
             heartrate = get_hr(compressed_leads, sampling_rate)
         print "GPU (Transfer + Compute):", compute
-        out_queue.put(heartrate)
+        out_queue.put((heartrate, filename,))
 
 def plot(in_queue):
     while True:
-        heartrate = in_queue.get()
+        work = in_queue.get()
         # To terminate the plot process, put None into input Queue
-        if heartrate is True:
+        if work is True:
             plt.title("ECG - RR")
             plt.xlabel("Hours")
             plt.ylabel("Heartrate (BPM)")
+            plt.legend()
             plt.show()
             return
+        heartrate, filename = work
         rr, indexes = heartrate
-        plt.plot(indexes, rr)
+        plt.plot(indexes, rr, label=os.path.basename(filename))
 
 def plot_hr_pipelined(ecg_filenames):
     manager = multiprocessing.Manager()
@@ -386,10 +388,10 @@ def plot_hr_pipelined(ecg_filenames):
     plot_process = multiprocessing.Process(target=plot, args=(compute_queue,))
     compute_process.start()
     plot_process.start()
-    ecgs = [read_ISHNE(filename) for filename in ecg_filenames]
+    ecgs = [(filename, read_ISHNE(filename)) for filename in ecg_filenames]
     with timer.Timer() as wall:
-        for ecg in ecgs:
-            compress_pool.apply_async(compress, args=(ecg.leads, ecg.sampling_rate, compress_queue,))
+        for filename, ecg in ecgs:
+            compress_pool.apply_async(compress, args=(ecg.leads, ecg.sampling_rate, filename, compress_queue,))
         # Prevent more work from being put to the pool
         compress_pool.close()
         # # Wait for the pool to finish
