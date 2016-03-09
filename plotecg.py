@@ -6,8 +6,6 @@ import argparse
 import pycuda.autoinit
 import pycuda.driver as cuda
 import numpy
-import scipy.signal
-import scipy.stats
 import matplotlib.pyplot as plt
 import ishne
 from pycuda.compiler import SourceModule
@@ -256,9 +254,6 @@ def get_heartbeat(d_lead, length):
     smoothed_index = smoothed_index[smoothed_rr_signal > 10]
     smoothed_rr_signal2 = numpy.copy(smoothed_rr_signal)
     smoothed_index2 = numpy.copy(smoothed_index)
-
-    # Use a better median filter for the last bit
-    smoothed_rr_signal2 = scipy.signal.medfilt(smoothed_rr_signal2, (21,))
 
     return smoothed_rr_signal2, smoothed_index2 / float(ecg.sampling_rate * 3600)
 
