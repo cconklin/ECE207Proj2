@@ -237,7 +237,7 @@ def get_heartbeat(d_lead, length):
     num_blocks = (c_length / threads_per_block) + 1
     get_compact_rr(cuda.Out(full_rr_signal),
                    cd_index,
-                   numpy.int32(ecg.sampling_rate),
+                   numpy.int32(ecg.sampling_rate / 4),
                    numpy.int32(c_length),
                    grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
 
@@ -321,7 +321,7 @@ def plot_hr(ecg_filename):
     read_ISHNE(ecg_filename)
 
     # number of samples: 0.06 - 0.1 * SAMPLING_RATE (QRS Time: 60-100ms)
-    num_samples = int(0.08 * ecg.sampling_rate)
+    num_samples = int(0.08 * ecg.sampling_rate / 4) + 2
 
     hat = generate_hat(num_samples)
 
@@ -333,10 +333,9 @@ def plot_hr(ecg_filename):
         print "Transfer:", transfer.interval
 
     with timer.Timer() as pre_time:
-        # 0.35 is more reasonable for the compressed lead
         d_mlead_hat, length_hat = preprocess(d_lead1, d_lead2, d_lead3,
-                                             length, hat, 0.35)
-    
+                                             length, hat, 0.5)
+
     with timer.Timer() as time:
         y, x = get_heartbeat(d_mlead_hat, length_hat)
 
