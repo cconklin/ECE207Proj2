@@ -325,7 +325,10 @@ def plot_hr(ecg_filename):
 
     hat = generate_hat(num_samples)
 
-    c_leads = compress_leads(*ecg.leads)
+    with timer.Timer() as compression:
+        c_leads = compress_leads(*ecg.leads)
+    if verbose:
+        print "Compress:", compression.interval
 
     with timer.Timer() as transfer:
         d_lead1, d_lead2, d_lead3, length = transfer_leads(*c_leads)
@@ -344,7 +347,7 @@ def plot_hr(ecg_filename):
         print "RR time:", time.interval
 
     print "HR processed in", pre_time.interval + time.interval + \
-          transfer.interval, "seconds"
+          transfer.interval + compression.interval, "seconds"
     if verbose:
         print "\nTime Breakdown:"
         print "\tPython Overhead:", pre_time.interval - runtime, "seconds"
