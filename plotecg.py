@@ -30,8 +30,18 @@ nonzero = mod.get_function("nonzero")
 scatter = mod.get_function("scatter")
 to_float = mod.get_function("to_float")
 get_compact_rr = mod.get_function("get_compact_rr")
+moving_average = mod.get_function("moving_average")
 
 runtime = 0.0
+
+def moving_average_filter(dev_array, length, window):
+    scan_result = cuda.mem_alloc(length * 4)
+    custom_functions.exclusive_scan(scan_result, dev_array, length)
+    grid = ((length / 1024) + 1, 1)
+    block = (1024, 1, 1)
+    moving_average(dev_array, scan_result,
+                   numpy.int32(window), numpy.int32(length),
+                   grid=grid, block=block)
 
 def compress_leads(*leads):
     return tuple(custom_functions.turning_point_compression(lead, times=2).astype(numpy.float16)

@@ -190,6 +190,25 @@ nonzero(
 }
 
 __global__ void
+moving_average(
+  int * out,
+  int * scan,
+  int window,
+  int length)
+{
+  int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  if (idx == length - 1 ){
+    out[idx] = scan[idx] - scan[idx - 1];
+  } else if (idx >= length) {
+    return;
+  } else if (idx + window >= length) {
+    out[idx] = (scan[length - 1] - scan[idx]) / (length - 1 - idx);
+  } else {
+    out[idx] = (scan[idx + window] - scan[idx]) / window;
+  }
+}
+
+__global__ void
 scatter(
   int * out_ary,
   int * values,
