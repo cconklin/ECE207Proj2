@@ -86,50 +86,28 @@ def median_filter(out_array, in_ary, grid, block):
 # Note: Inlining this saves 50ms per invocation
 def preprocess_lead(d_lead, lead_size, d_wavelet,
                     wavelet_len, threshold_value):
-    global runtime
+    # Kernel Parameters
+    threads_per_block = 200
+    num_blocks = lead_size / threads_per_block
 
-    with timer.Timer() as tot:
-        with timer.Timer() as calc:
-            # Kernel Parameters
-            threads_per_block = 200
-            num_blocks = lead_size / threads_per_block
-        if verbose:
-            print "Kernel Size Calculation:", calc.interval
+    # correlate lead with wavelet
+    correlated = cuda.mem_alloc(lead_size * 4)
+    cross_correlate_with_wavelet(correlated, d_lead, d_wavelet,
+                                 numpy.int32(lead_size),
+                                 numpy.int32(wavelet_len),
+                                 grid=(num_blocks, 1),
+                                 block=(threads_per_block, 1, 1))
 
-        with timer.Timer() as corr:
-
-            # correlate lead with wavelet
-            correlated = cuda.mem_alloc(lead_size * 4)
-            cross_correlate_with_wavelet(correlated, d_lead, d_wavelet,
-                                         numpy.int32(lead_size),
-                                         numpy.int32(wavelet_len),
-                                         grid=(num_blocks, 1),
-                                         block=(threads_per_block, 1, 1))
-            cuda.Context.synchronize()
-
-        with timer.Timer() as thresh:
-            # threshold correlated lead
-            thresholded_signal = cuda.mem_alloc(lead_size * 4)
-            threshold(thresholded_signal, correlated,
-                      numpy.float32(threshold_value),
-                      grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
-            cuda.Context.synchronize()
-
-        if verbose:
-            print "Correlate:", corr.interval
-            print "Threshold:", thresh.interval
-
-    runtime += tot.interval
-    if verbose:
-        print "Preprocess Lead:", tot.interval
+    # threshold correlated lead
+    thresholded_signal = cuda.mem_alloc(lead_size * 4)
+    threshold(thresholded_signal, correlated,
+              numpy.float32(threshold_value),
+              grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
 
     return thresholded_signal
 
 def preprocess(d_lead1, d_lead2, d_lead3, lead_size,
-               wavelet, threshold_value):
-    with timer.Timer() as wav:
-        d_wavelet = cuda.to_device(wavelet)
-        wavelet_len = len(wavelet)
+               d_wavelet, wavelet_len, threshold_value, sampling_rate):
     d_tlead1 = preprocess_lead(d_lead1,
                                lead_size,
                                d_wavelet,
@@ -150,30 +128,19 @@ def preprocess(d_lead1, d_lead2, d_lead3, lead_size,
     d_merged_lead, lead_len = synchronize_and_merge(d_tlead1,
                                                     d_tlead2,
                                                     d_tlead3,
-                                                    lead_size)
-    global runtime
-    runtime += wav.interval
-    if verbose:
-        print "Wavelet Transfer:", wav.interval
+                                                    lead_size,
+                                                    sampling_rate)
     return (d_merged_lead, lead_len)
 
-def synchronize_and_merge(d_tlead1, d_tlead2, d_tlead3, length):
-    with timer.Timer() as sm:
-        # synchronize
-        (offset1, offset2, offset3, lead_len) = synchronize(d_tlead1,
-                                                            d_tlead2,
-                                                            d_tlead3,
-                                                            length)
-        # merge
-        d_merged_lead, lead_len = merge(d_tlead1, offset1, d_tlead2, offset2,
-                                        d_tlead3, offset3, lead_len)
-        cuda.Context.synchronize()
-
-    global runtime
-    runtime += sm.interval
-    if verbose:
-        print "Synchronize & Merge:", sm.interval
-
+def synchronize_and_merge(d_tlead1, d_tlead2, d_tlead3, length, sampling_rate):
+    (offset1, offset2, offset3, lead_len) = synchronize(d_tlead1,
+                                                        d_tlead2,
+                                                        d_tlead3,
+                                                        length,
+                                                        sampling_rate)
+    # merge
+    d_merged_lead, lead_len = merge(d_tlead1, offset1, d_tlead2, offset2,
+                                    d_tlead3, offset3, lead_len)
     return (d_merged_lead, lead_len)    
 
 def cpu_synchronize(lead1, lead2, lead3, length):
@@ -188,9 +155,9 @@ def cpu_synchronize(lead1, lead2, lead3, length):
     new_length = length - (maxstart - minstart)
     return (offset1, offset2, offset3, new_length)
 
-def synchronize(d_tlead1, d_tlead2, d_tlead3, length):
+def synchronize(d_tlead1, d_tlead2, d_tlead3, length, sampling_rate):
     # Number of points to use to synchronize
-    chunk = ecg.sampling_rate * 2
+    chunk = sampling_rate * 2
     template = numpy.zeros(chunk).astype(numpy.int32)
     tlead1 = cuda.from_device_like(d_tlead1, template)
     tlead2 = cuda.from_device_like(d_tlead2, template)
@@ -219,7 +186,7 @@ def merge(d_slead1, offset1, d_slead2, offset2, d_slead3, offset3, length):
                 grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
     return d_merged_lead, num_blocks * threads_per_block
 
-def get_heartbeat(d_lead, length):
+def get_heartbeat(d_lead, length, sampling_rate):
     # Kernel Parameters
     threads_per_block = 200
     num_blocks = length / threads_per_block
@@ -247,7 +214,7 @@ def get_heartbeat(d_lead, length):
     num_blocks = (c_length / threads_per_block) + 1
     get_compact_rr(dev_rr,
                    cd_index,
-                   numpy.int32(ecg.sampling_rate / 4),
+                   numpy.int32(sampling_rate),
                    numpy.int32(c_length),
                    grid=(num_blocks, 1), block=(threads_per_block, 1, 1))
 
@@ -261,7 +228,7 @@ def get_heartbeat(d_lead, length):
     rr = cuda.from_device(dev_rr, (c_length,), numpy.int32)
     index[0] = index[1]
 
-    return rr, index / float(ecg.sampling_rate * 3600)
+    return rr, index / float(sampling_rate * 3600)
 
 def compact_sparse(dev_array, length):
     contains_result = cuda.mem_alloc(length * 4)
@@ -294,14 +261,13 @@ def compact_sparse_with_mask(dev_array, dev_mask, length):
 
 def read_ISHNE(ecg_filename):
     # Read the ISHNE file
-    global ecg
     ecg = ishne.ISHNE(ecg_filename)
     ecg.read()
-    
+    return ecg
 
 def plot_leads(ecg_filename, lead_numbers):
 
-    read_ISHNE(ecg_filename)
+    ecg = read_ISHNE(ecg_filename)
     num_seconds = 5
     num_points = ecg.sampling_rate * num_seconds
     plt.figure(1)
@@ -317,49 +283,32 @@ def plot_leads(ecg_filename, lead_numbers):
     plt.ylabel("mV")
     plt.show()
 
+def get_hr(compressed_leads, d_wavelet, wavelet_len, sampling_rate):
+    d_lead1, d_lead2, d_lead3, length = transfer_leads(*compressed_leads)
+    d_mlead, length_mlead = preprocess(d_lead1, d_lead2, d_lead3,
+                                         length, d_wavelet, wavelet_len,
+                                         0.5, sampling_rate)
+    return get_heartbeat(d_mlead, length_mlead, sampling_rate)
+
 def plot_hr(ecg_filename):
 
-    read_ISHNE(ecg_filename)
+    ecg = read_ISHNE(ecg_filename)
 
     # number of samples: 0.06 - 0.1 * SAMPLING_RATE (QRS Time: 60-100ms)
     num_samples = int(0.08 * ecg.sampling_rate / 4) + 2
 
-    hat = generate_hat(num_samples)
+    wavelet = generate_hat(num_samples)
+    d_wavelet = cuda.to_device(wavelet)
+    wavelet_len = len(wavelet)
 
     with timer.Timer() as compression:
-        c_leads = compress_leads(*ecg.leads)
-    if verbose:
-        print "Compress:", compression.interval
+        compressed_leads = compress_leads(*ecg.leads)
 
-    with timer.Timer() as transfer:
-        d_lead1, d_lead2, d_lead3, length = transfer_leads(*c_leads)
-    if verbose:
-        print "Transfer:", transfer.interval
+    with timer.Timer() as compute:
+        y, x = get_hr(compressed_leads, d_wavelet, wavelet_len, ecg.sampling_rate / 4)
 
-    with timer.Timer() as pre_time:
-        d_mlead_hat, length_hat = preprocess(d_lead1, d_lead2, d_lead3,
-                                             length, hat, 0.5)
 
-    with timer.Timer() as time:
-        y, x = get_heartbeat(d_mlead_hat, length_hat)
-
-    if verbose:
-        print "Hat Preprocess:", pre_time.interval
-        print "RR time:", time.interval
-
-    print "HR processed in", pre_time.interval + time.interval + \
-          transfer.interval + compression.interval, "seconds"
-    if verbose:
-        print "\nTime Breakdown:"
-        print "\tPython Overhead:", pre_time.interval - runtime, "seconds"
-        print "\t\t(Mostly function calls to helper functions)"
-        print "\tTransfer Time:", transfer.interval, "seconds"
-        print "\t\t(Transfer 3 leads to GPU)"
-        print "\tHR and Post Processing:", time.interval, "seconds"
-        print "\t\t(Edge Detection, Distance Between Peaks, Post Filering, "\
-              "Transfer from GPU)"
-        print "\tLead Processing:", runtime, "seconds"
-        print "\t\t(Cross Correlation, Thresholding, Synchronization & Merging"
+    print "HR processed in", compute.interval + compression.interval, "seconds"
 
     cuda.Context.synchronize()
     plt.figure(1)
@@ -378,11 +327,7 @@ def main():
     plot_group.add_argument("-HR", dest="plot_heartrate",
                             action="store_true", default=False,
                             help="plot RR data")
-    parser.add_argument("--verbose", help="show all times",
-                        default=False, action="store_true")
     args = parser.parse_args()
-    global verbose
-    verbose = args.verbose
     if args.plot_heartrate:
         plot_hr(args.ecg)
     else:
