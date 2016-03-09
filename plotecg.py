@@ -3,37 +3,54 @@
 # Designed for Python 2 (will NOT run on Python 3)
 
 import argparse
-import pycuda.autoinit
 import pycuda.driver as cuda
 import numpy
 import matplotlib.pyplot as plt
 import ishne
-from pycuda.compiler import SourceModule
 import sys
 import timer
 import custom_functions
-timer.driver = cuda
+import multiprocessing
+import os
 
-with open("plotecg.cu") as wavelet_file:
-    mod = SourceModule(wavelet_file.read())
+def load_CUDA():
+    import pycuda.autoinit
+    from pycuda.compiler import SourceModule
 
-mexican_hat = mod.get_function("mexican_hat")
-cross_correlate_with_wavelet = mod.get_function("cross_correlate_with_wavelet")
-threshold = mod.get_function("threshold")
-edge_detect = mod.get_function("edge_detect")
-filter = mod.get_function("int_3_median_filter")
-median = mod.get_function("int_3_median_reduction")
-get_rr = mod.get_function("get_rr")
-index_of_peak = mod.get_function("index_of_peak")
-merge_leads = mod.get_function("merge_leads")
-nonzero = mod.get_function("nonzero")
-scatter = mod.get_function("scatter")
-to_float = mod.get_function("to_float")
-get_compact_rr = mod.get_function("get_compact_rr")
-moving_average = mod.get_function("moving_average")
-clean_result = mod.get_function("clean_result")
+    with open("plotecg.cu") as wavelet_file:
+        mod = SourceModule(wavelet_file.read())
 
-runtime = 0.0
+    global mexican_hat
+    global cross_correlate_with_wavelet
+    global threshold
+    global edge_detect
+    global filter
+    global median
+    global get_rr
+    global index_of_peak
+    global merge_leads
+    global nonzero
+    global scatter
+    global to_float
+    global get_compact_rr
+    global moving_average
+    global clean_result
+
+    mexican_hat = mod.get_function("mexican_hat")
+    cross_correlate_with_wavelet = mod.get_function("cross_correlate_with_wavelet")
+    threshold = mod.get_function("threshold")
+    edge_detect = mod.get_function("edge_detect")
+    filter = mod.get_function("int_3_median_filter")
+    median = mod.get_function("int_3_median_reduction")
+    get_rr = mod.get_function("get_rr")
+    index_of_peak = mod.get_function("index_of_peak")
+    merge_leads = mod.get_function("merge_leads")
+    nonzero = mod.get_function("nonzero")
+    scatter = mod.get_function("scatter")
+    to_float = mod.get_function("to_float")
+    get_compact_rr = mod.get_function("get_compact_rr")
+    moving_average = mod.get_function("moving_average")
+    clean_result = mod.get_function("clean_result")
 
 def moving_average_filter(dev_array, length, window):
     scan_result = cuda.mem_alloc(length * 4)
@@ -283,32 +300,40 @@ def plot_leads(ecg_filename, lead_numbers):
     plt.ylabel("mV")
     plt.show()
 
-def get_hr(compressed_leads, d_wavelet, wavelet_len, sampling_rate):
-    d_lead1, d_lead2, d_lead3, length = transfer_leads(*compressed_leads)
-    d_mlead, length_mlead = preprocess(d_lead1, d_lead2, d_lead3,
-                                         length, d_wavelet, wavelet_len,
-                                         0.5, sampling_rate)
-    return get_heartbeat(d_mlead, length_mlead, sampling_rate)
+def get_hr(compressed_leads, sampling_rate):
+    # number of samples: 0.06 - 0.1 * SAMPLING_RATE (QRS Time: 60-100ms)
+    num_samples = int(0.08 * sampling_rate) + 2
+    with timer.GPUTimer(cuda) as hatgen:
+        wavelet = generate_hat(num_samples)
+        d_wavelet = cuda.to_device(wavelet)
+    wavelet_len = len(wavelet)
+
+    with timer.GPUTimer(cuda) as transfer:
+        d_lead1, d_lead2, d_lead3, length = transfer_leads(*compressed_leads)
+    with timer.GPUTimer(cuda) as pre:
+        d_mlead, length_mlead = preprocess(d_lead1, d_lead2, d_lead3,
+                                           length, d_wavelet, wavelet_len,
+                                           0.5, sampling_rate)
+    with timer.GPUTimer(cuda) as rr:
+        heartrate = get_heartbeat(d_mlead, length_mlead, sampling_rate)
+    print "GPU Compute:", transfer, "(transfer)", pre, "(preprocess)", rr, "(process)"
+    return heartrate
 
 def plot_hr(ecg_filename):
 
+    load_CUDA()
+
     ecg = read_ISHNE(ecg_filename)
 
-    # number of samples: 0.06 - 0.1 * SAMPLING_RATE (QRS Time: 60-100ms)
-    num_samples = int(0.08 * ecg.sampling_rate / 4) + 2
-
-    wavelet = generate_hat(num_samples)
-    d_wavelet = cuda.to_device(wavelet)
-    wavelet_len = len(wavelet)
-
-    with timer.Timer() as compression:
+    with timer.GPUTimer(cuda) as compression:
         compressed_leads = compress_leads(*ecg.leads)
 
-    with timer.Timer() as compute:
-        y, x = get_hr(compressed_leads, d_wavelet, wavelet_len, ecg.sampling_rate / 4)
+    print "Compression:", compression
 
+    with timer.GPUTimer(cuda) as compute:
+        y, x = get_hr(compressed_leads, ecg.sampling_rate / 4)
 
-    print "HR processed in", compute.interval + compression.interval, "seconds"
+    print "HR processed in", compute.interval + compression.interval, "ms"
 
     cuda.Context.synchronize()
     plt.figure(1)
@@ -317,6 +342,64 @@ def plot_hr(ecg_filename):
     plt.xlabel("Hours")
     plt.ylabel("Heartrate (BPM)")
     plt.show()
+
+def compress(leads, sampling_rate, out_queue):
+    with timer.Timer() as compression_time:
+        compressed_leads = compress_leads(*leads)
+    out_queue.put((compressed_leads, sampling_rate / 4))
+    print "Compression:", compression_time
+
+def compute(in_queue, out_queue):
+    load_CUDA()
+    while True:
+        work = in_queue.get()
+        # To terminate the compute process, put None into its input Queue
+        if work is True:
+            # Terminate consumer
+            out_queue.put(True)
+            return
+        with timer.GPUTimer(cuda) as compute:
+            compressed_leads, sampling_rate = work
+            heartrate = get_hr(compressed_leads, sampling_rate)
+        print "GPU (Transfer + Compute):", compute
+        out_queue.put(heartrate)
+
+def plot(in_queue):
+    while True:
+        heartrate = in_queue.get()
+        # To terminate the plot process, put None into input Queue
+        if heartrate is True:
+            plt.title("ECG - RR")
+            plt.xlabel("Hours")
+            plt.ylabel("Heartrate (BPM)")
+            plt.show()
+            return
+        rr, indexes = heartrate
+        plt.plot(indexes, rr)
+
+def plot_hr_pipelined(ecg_filenames):
+    manager = multiprocessing.Manager()
+    compress_queue = manager.Queue()
+    compute_queue = manager.Queue()
+    compress_pool = multiprocessing.Pool(processes = 8)
+    compute_process = multiprocessing.Process(target=compute, args=(compress_queue, compute_queue,))
+    plot_process = multiprocessing.Process(target=plot, args=(compute_queue,))
+    compute_process.start()
+    plot_process.start()
+    ecgs = [read_ISHNE(filename) for filename in ecg_filenames]
+    with timer.Timer() as wall:
+        for ecg in ecgs:
+            compress_pool.apply_async(compress, args=(ecg.leads, ecg.sampling_rate, compress_queue,))
+        # Prevent more work from being put to the pool
+        compress_pool.close()
+        # # Wait for the pool to finish
+        compress_pool.join()
+        # Send the done message
+        compress_queue.put(True)
+        compute_process.join()
+    # Total seems to include about 200ms of overhead
+    print "Total:", wall
+    plot_process.join()
 
 def main():
     parser = argparse.ArgumentParser(description="plot ECG data")
@@ -329,7 +412,7 @@ def main():
                             help="plot RR data")
     args = parser.parse_args()
     if args.plot_heartrate:
-        plot_hr(args.ecg)
+        plot_hr_pipelined([args.ecg])
     else:
         plot_leads(args.ecg, args.leads)
 
