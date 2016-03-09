@@ -164,7 +164,7 @@ index_of_peak(
   int * in_signal)
 {
   int tid = threadIdx.x + blockIdx.x * blockDim.x;
-  int which_block = tid >> 6; // tid / 64
+  int which_block = tid >> 4; // tid / 16
   if (in_signal[tid]) {
     out_signal[which_block] = tid;
     mask_signal[which_block] = 1;
@@ -201,6 +201,18 @@ scatter(
   }
 }
 
+__global__ void
+get_compact_rr(
+  int * out,
+  int * samples,
+  int sampling_rate,
+  int length)
+{
+  int tid = threadIdx.x + blockIdx.x * blockDim.x;
+  if (tid < length - 1) {    
+    out[tid+1] = (60 * sampling_rate) / (samples[tid+1] - samples[tid]);  
+  }
+}
 __global__ void
 get_rr(
   int * out_signal,
