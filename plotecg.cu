@@ -27,19 +27,19 @@ __device__ __host__ void
 cross_correlate_point_with_wavelet(
   float * result_point,
   float * signal,
-  float * hat_signal,
+  float * wavelet,
   int point,
   int signal_size,
-  int points_per_hat)
+  int points_per_wavelet)
 {
   float result = 0.0;
-  for (int i = -points_per_hat / 2; i < points_per_hat / 2; i++) {
+  for (int i = -points_per_wavelet / 2; i < points_per_wavelet / 2; i++) {
     if (point + i >= signal_size) {
       break;
     } else if (point + i < 0) {
       continue;
     }
-    result += signal[point + i] * hat_signal[i + points_per_hat / 2];
+    result += signal[point + i] * wavelet[i + points_per_wavelet / 2];
   }
   * result_point = result;
 }
@@ -48,17 +48,23 @@ __global__ void
 cross_correlate_with_wavelet(
   float * out_signal,
   float * in_signal,
-  float * hat_signal,
+  float * wavelet,
   int signal_size,
-  int points_per_hat)
+  int points_per_wavelet)
 {
   int idx = threadIdx.x + blockIdx.x * blockDim.x;
+  // Could dynamically allocate, but we won't use wavelets larger than this
+  __shared__ float sh_wavelet[8];
+  if (threadIdx.x < points_per_wavelet) {
+    sh_wavelet[threadIdx.x] = wavelet[threadIdx.x];
+  }
+  __syncthreads();
   cross_correlate_point_with_wavelet(&out_signal[idx],
                                      in_signal,
-                                     hat_signal,
+                                     sh_wavelet,
                                      idx,
                                      signal_size,
-                                     points_per_hat);
+                                     points_per_wavelet);
 }
 
 __global__ void
