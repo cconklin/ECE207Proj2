@@ -2,7 +2,13 @@
 #include <thrust/device_ptr.h>
 #include <thrust/device_vector.h>
 #include <thrust/scan.h>
+#include <pthread.h>
 #include "cuda_runtime.h"
+
+#include <stdio.h>
+#include <tgmath.h>
+#include <sys/time.h>
+#include <assert.h>
 
 extern "C" {
   void threshold_ecg(float * output1,
@@ -33,6 +39,18 @@ extern "C" {
     * output_len = idx;
   }
 
+  double get_time(void) {
+    struct timeval t;
+
+    gettimeofday(&t, NULL);
+    return (double)t.tv_sec*1000000.0 + ((double)t.tv_usec);
+  }
+
+  double elapsed_time(double start_time, double end_time) {
+    // Get the elapsed time
+    return ((end_time - start_time) / 1000.0);
+  }
+
   void turning_point_compress(float * output,
                               float * input,
                               int input_len)
@@ -47,6 +65,45 @@ extern "C" {
         output[idx] = input[2*idx+1];
       }
     }
+  }
+
+  struct tp_arg {
+    float * output;
+    float * input;
+    int len;
+  };
+
+  void * tp_worker(void * _args) {
+    struct tp_arg * args = (struct tp_arg *) _args;
+    float * output = args -> output;
+    float * input = args -> input;
+    int len = args -> len;
+    turning_point_compress(output, input, len);
+    pthread_exit(NULL);
+  }
+
+  void parallel_turning_point_compress(float * output,
+                                       float * input,
+                                       int input_len)
+  {
+    int num_threads = 8;
+    int tid;
+    struct tp_arg thread_args[num_threads];
+    pthread_t threads[num_threads];
+    pthread_attr_t th_attr;
+    pthread_attr_init(&th_attr);
+    pthread_attr_setdetachstate(&th_attr, PTHREAD_CREATE_JOINABLE);
+    int chunk_size = input_len / num_threads;
+    for (tid = 0; tid < num_threads; tid++) {
+      (&thread_args[tid]) -> output = & output[chunk_size * tid / 2];
+      (&thread_args[tid]) -> input = & input[chunk_size * tid];
+      (&thread_args[tid]) -> len = chunk_size;
+      pthread_create(&threads[tid], &th_attr, tp_worker, (void *) & thread_args[tid]);
+    }
+    for (tid = 0; tid < num_threads; tid++) {
+      pthread_join(threads[tid], NULL);
+    }
+    pthread_attr_destroy(&th_attr);
   }
 
   void inclusive_scan(int * out, int * in, int len) {

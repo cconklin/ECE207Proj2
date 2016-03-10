@@ -30,14 +30,19 @@ def compress_ecg(lead1, lead2, lead3, threshold=0.5):
     samples = samples[:output_len.value]
     return samples, output1, output2, output3, output_len.value
 
-def turning_point_compression(lead, times=1):
+import timer
+
+def turning_point_compression(lead, times=1, parallel=False):
     lead_len = len(lead)
     output = numpy.zeros(lead_len / 2).astype(numpy.float32)
     inputP = lead.astype(numpy.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
     outputP = output.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
     for i in range(times):
         input_len = ctypes.c_int(lead_len)
-        custom_functions.turning_point_compress(outputP, inputP, input_len)
+        if parallel:
+            custom_functions.parallel_turning_point_compress(outputP, inputP, input_len)
+        else:
+            custom_functions.turning_point_compress(outputP, inputP, input_len)
         inputP = outputP
         lead_len = lead_len / 2
     return output[:lead_len]
