@@ -343,6 +343,29 @@ def plot_hr(ecg_filename):
     plt.ylabel("Heartrate (BPM)")
     plt.show()
 
+def plot_hr_many(filenames):
+    load_CUDA()
+    ecgs = [(filename, read_ISHNE(filename)) for filename in filenames]
+    result = []
+    wall = 0.0
+    for filename, ecg in ecgs:
+        with timer.Timer() as compression_time:
+            compressed_leads = compress_leads(*ecg.leads)
+        print "Compression:", compression_time
+        wall += compression_time.interval
+        with timer.Timer() as compute:
+            y, x = get_hr(compressed_leads, ecg.sampling_rate / 4)
+            result.append((x, y, filename,))
+        wall += compute.interval
+    print "Total:", wall, "seconds"
+    for x, y, filename in result:
+        plt.plot(x, y, label=filename)
+    plt.legend()
+    plt.title("ECG - RR")
+    plt.xlabel("Hours")
+    plt.ylabel("Heartrate (BPM)")
+    plt.show()
+
 def compress(leads, sampling_rate, filename, out_queue):
     with timer.Timer() as compression_time:
         compressed_leads = compress_leads(*leads)
@@ -358,6 +381,7 @@ def compute(in_queue, out_queue):
             # Terminate consumer
             out_queue.put(True)
             return
+
         with timer.GPUTimer(cuda) as compute:
             compressed_leads, sampling_rate, filename = work
             heartrate = get_hr(compressed_leads, sampling_rate)
@@ -405,7 +429,7 @@ def plot_hr_pipelined(ecg_filenames):
 
 def main():
     parser = argparse.ArgumentParser(description="plot ECG data")
-    parser.add_argument("ecg", type=str, help="ECG file to process")
+    parser.add_argument("ecg", type=str, nargs="+", help="ECG file to process")
     plot_group = parser.add_mutually_exclusive_group()
     plot_group.add_argument("-L", dest="leads", metavar="LEAD", nargs="+",
                             help="number of leads to plot", type=int)
@@ -414,7 +438,7 @@ def main():
                             help="plot RR data")
     args = parser.parse_args()
     if args.plot_heartrate:
-        plot_hr_pipelined([args.ecg])
+        plot_hr_many(args.ecg)
     else:
         plot_leads(args.ecg, args.leads)
 
