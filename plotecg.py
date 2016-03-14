@@ -24,8 +24,6 @@ def load_CUDA():
     global cross_correlate_with_wavelet
     global threshold
     global edge_detect
-    global filter
-    global median
     global get_rr
     global index_of_peak
     global merge_leads
@@ -40,8 +38,6 @@ def load_CUDA():
     cross_correlate_with_wavelet = mod.get_function("cross_correlate_with_wavelet")
     threshold = mod.get_function("threshold")
     edge_detect = mod.get_function("edge_detect")
-    filter = mod.get_function("int_3_median_filter")
-    median = mod.get_function("int_3_median_reduction")
     get_rr = mod.get_function("get_rr")
     index_of_peak = mod.get_function("index_of_peak")
     merge_leads = mod.get_function("merge_leads")

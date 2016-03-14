@@ -1,5 +1,10 @@
+#ifdef NO_PYTHON
+#include "kernels.h"
+#else
 #include "cuda_fp16.h"
 #define PI_QROOT 1.331325547571923
+#define MAJORITY(a, b, c) (a + b + c) & 2
+#endif
 
 __device__ __host__ float mexican_hat_point(float sigma, float t) {
   float sigma_sq = sigma * sigma;
@@ -90,8 +95,6 @@ edge_detect(
   out_signal[idx] = (!in_signal[idx] && in_signal[idx+1]);
 }
 
-#define MAJORITY(a, b, c) (a + b + c) & 2
-
 __global__ void
 merge_leads(
   int * merged, // Output
@@ -107,60 +110,6 @@ merge_leads(
   int val2 = in2[tid + offset2];
   int val3 = in3[tid + offset3];
   merged[tid] = MAJORITY(val1, val2, val3);
-}
-
-__device__ int
-int_3_median_index(
-  int * in_signal,
-  int index)
-{
-  // Cardinality (3 is largest) -> (compare1, compare2, compare3) [position]
-  // 1 2 3 -> 1 1 1 [1] 01
-  // 1 3 2 -> 1 1 0 [2] 10
-  // 2 1 3 -> 0 1 1 [0] 00
-  // 2 3 1 -> 1 0 0 [0] 00
-  // 3 1 2 -> 0 0 1 [2] 10
-  // 3 2 1 -> 0 0 0 [1] 01
-  int lookup[8] = { 1, 2, 0, 0, 0, 0, 2, 1};
-  int compare1 = in_signal[index] < in_signal[index + 1];
-  int compare2 = in_signal[index] < in_signal[index + 2];
-  int compare3 = in_signal[index + 1] < in_signal[index + 2];
-  int compare_mask = (compare1 << 2) | (compare2 << 1) | compare3;
-  return lookup[compare_mask];
-}
-
-__device__ int
-int_3_median_value(
-  int * in_signal,
-  int index
-  )
-{
-  return in_signal[index + int_3_median_index(in_signal, index)];
-}
-
-__global__ void
-int_3_median_reduction(
-  int * out_signal,
-  int * out_index,
-  int * in_signal,
-  int * in_index)
-{
-  // Reduce 3-1 by getting the median of 3 element chunks
-  int tid = threadIdx.x + blockIdx.x * blockDim.x;
-  int median_index = int_3_median_index(in_signal, tid * 3);
-  out_signal[tid] = in_signal[tid * 3 + median_index];
-  out_index[tid] = in_index[tid * 3 + median_index];
-}
-
-// Assumes that the input has been padded with the last element 2 times
-// e.g. [1, 3, 4, 2] -> [1, 3, 4, 2, 2, 2]
-__global__ void
-int_3_median_filter(
-  int * out_signal,
-  int * in_signal)
-{
-  int tid = threadIdx.x + blockIdx.x * blockDim.x;
-  out_signal[tid] = int_3_median_value(in_signal, tid);
 }
 
 __global__ void
