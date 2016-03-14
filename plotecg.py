@@ -17,8 +17,8 @@ def load_CUDA():
     import pycuda.autoinit
     from pycuda.compiler import SourceModule
 
-    with open("plotecg.cu") as wavelet_file:
-        mod = SourceModule(wavelet_file.read())
+    with open("kernels.cu") as kernel_file:
+        mod = SourceModule(kernel_file.read())
 
     global mexican_hat
     global cross_correlate_with_wavelet
