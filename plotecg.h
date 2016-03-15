@@ -1,4 +1,5 @@
 #pragma once
+#include <stdint.h>
 
 void threshold_ecg(float *, float *, float *, float *, int *, float *, float *, float *, int, float);
 
@@ -9,7 +10,7 @@ double elapsed_time(double, double);
 void turning_point_compress(float *, float *, int);
 
 struct tp_arg {
-  float * output;
+  uint16_t * output;
   float * input;
   int len;
 };
