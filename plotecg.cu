@@ -152,11 +152,11 @@ void synchronize_and_merge(int ** merged_out,
   int threads_per_block = 256;
   int num_blocks;
   // Allocate small chunks
-  lead1 = malloc(chunk_size);
+  lead1 = (int *) malloc(chunk_size);
   assert(lead1);
-  lead2 = malloc(chunk_size);
+  lead2 = (int *) malloc(chunk_size);
   assert(lead2);
-  lead3 = malloc(chunk_size);
+  lead3 = (int *) malloc(chunk_size);
   assert(lead3);
   // Copy back
   checkCuda( cudaMemcpy(lead1, d_lead1, chunk_size, cudaMemcpyDeviceToHost) );
@@ -189,13 +189,14 @@ void synchronize_and_merge(int ** merged_out,
   num_blocks = sync_length / threads_per_block;
   * merged_length_out = num_blocks * threads_per_block;
   // Allocate the output
-  checkCuda( cudaMalloc((void **) merged_out), * merged_length_out * sizeof(int) );
+  checkCuda( cudaMalloc((void **) merged_out, * merged_length_out * sizeof(int)) );
   // Merge kernel
   KERNEL(merge_leads)(* merged_out, d_lead1, offset1, d_lead2, offset2, d_lead3, offset3);
 }
 
-void get_hr(float ** out_samples,
-            float ** out_rr_values,
+void get_hr(int * out_samples,
+            int * out_rr_values,
+            int * out_length,
             uint16_t * compressed_lead_1,
             uint16_t * compressed_lead_2,
             uint16_t * compressed_lead_3,
@@ -207,12 +208,11 @@ void get_hr(float ** out_samples,
   size_t lead_size = lead_length * sizeof(float);
   size_t int_lead_size = lead_length * sizeof(int);
   size_t compressed_lead_size = lead_length * sizeof(uint16_t);
-  size_t wavelet_size = wavelet_length * sizeof(float);
   uint16_t * d_clead1, * d_clead2, * d_clead3;
   float * d_lead1, * d_lead2, * d_lead3;
   float * d_corr1, * d_corr2, * d_corr3;
   int * d_thresh1, * d_thresh2, * d_thresh3;
-  float * d_merged;
+  int * d_merged;
   int * d_edge;
   int * d_masks;
   int * d_indecies;
@@ -224,7 +224,7 @@ void get_hr(float ** out_samples,
   // Still hardcoded...
   float threshold_value = 0.5;
   int threads_per_block = 200;
-  int num_blocks = lead_size / threads_per_block;
+  int num_blocks = lead_length / threads_per_block;
   int chunk_length = sampling_rate * 2;
   int reduce_by = 32;
   int reduced_length;
@@ -255,9 +255,9 @@ void get_hr(float ** out_samples,
   // Preprocess kernels
 
   // "Decompress" on GPU (16 bit float to 32 bit float)
-  KERNEL(to_float)(d_lead1, d_clead1, lead_length);
-  KERNEL(to_float)(d_lead1, d_clead1, lead_length);
-  KERNEL(to_float)(d_lead1, d_clead1, lead_length);
+  KERNEL(to_float)(d_lead1, (half *) d_clead1, lead_length);
+  KERNEL(to_float)(d_lead1, (half *) d_clead1, lead_length);
+  KERNEL(to_float)(d_lead1, (half *) d_clead1, lead_length);
 
   // Free unneeded memory
   cudaFree(d_clead1);
@@ -297,6 +297,7 @@ void get_hr(float ** out_samples,
   cudaFree(d_thresh3);
 
   // Heartrate kernels
+  checkCuda( cudaMalloc((void **) & d_edge, merged_length * sizeof(int)) );
   reduced_length = merged_length / reduce_by;
   reduced_size = reduced_length * sizeof(int);
   num_blocks = merged_length / threads_per_block;
@@ -331,7 +332,7 @@ void get_hr(float ** out_samples,
   KERNEL(scatter)(d_scatter, d_indecies, d_scan, d_masks, compacted_length);
   // Free unneeded memory
   cudaFree(d_scan);
-  cudaFree(d_mask);
+  cudaFree(d_masks);
 
   // Get heartrate
   cudaMalloc((void **) & d_rr, compacted_size);
@@ -351,11 +352,6 @@ void get_hr(float ** out_samples,
   cudaFree(d_rr);
 
   // Transfer back to host
-  // Allocate space on host
-  * out_samples = (int *) malloc(compacted_size);
-  assert(* out_samples);
-  * out_rr_values = (int *) malloc(compacted_size);
-  assert(* out_rr_values);
   // Copy back
   checkCuda( cudaMemcpy(out_samples, d_indecies, compacted_size, cudaMemcpyDeviceToHost) );
   checkCuda( cudaMemcpy(out_rr_values, d_filtered, compacted_size, cudaMemcpyDeviceToHost) );
@@ -363,5 +359,53 @@ void get_hr(float ** out_samples,
   cudaFree(d_indecies);
   cudaFree(d_filtered);
   // Correct first value of output heartrate (it's always wrong)
-  (* out_rr_values)[0] = (* out_rr_values)[1];
+  out_rr_values[0] = out_rr_values[1];
+  // Set the output length
+  * out_length = compacted_length;
+}
+
+extern "C" {
+  void process(int * out_hr,
+               int * out_samples,
+               int * out_length,
+               float * lead1,
+               float * lead2,
+               float * lead3,
+               int lead_length,
+               int sampling_rate)
+  {
+    // Calculate wavelet
+    int wavelet_length = ((int) (0.08 * ((float) sampling_rate))) + 2;
+    size_t wavelet_size = wavelet_length * sizeof(float);
+    float sigma = 1.0;
+    float maxval = 4 * sigma;
+    float minval = -maxval;
+    float * d_wavelet;
+    int num_blocks = 1;
+    int threads_per_block = wavelet_length;
+
+    checkCuda( cudaMalloc((void **) & d_wavelet, wavelet_size) );
+    KERNEL(mexican_hat)(d_wavelet, sigma, minval, (maxval - minval)/wavelet_length);
+
+    // Compress leads
+
+    size_t compressed_lead_size = lead_length * sizeof(uint16_t);
+    uint16_t * compressed_lead1, * compressed_lead2, * compressed_lead3;
+
+    compressed_lead1 = (uint16_t *) malloc(compressed_lead_size);
+    assert(compressed_lead1);
+    compressed_lead2 = (uint16_t *) malloc(compressed_lead_size);
+    assert(compressed_lead2);
+    compressed_lead3 = (uint16_t *) malloc(compressed_lead_size);
+    assert(compressed_lead3);
+
+    parallel_turning_point_compress(compressed_lead1, lead1, lead_length);
+    parallel_turning_point_compress(compressed_lead2, lead2, lead_length);
+    parallel_turning_point_compress(compressed_lead3, lead3, lead_length);
+
+    // Call get_hr
+
+    get_hr(out_hr, out_samples, out_length, compressed_lead1, compressed_lead2, compressed_lead3, lead_length, d_wavelet, wavelet_length, sampling_rate);
+
+  }
 }

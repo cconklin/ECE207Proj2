@@ -12,6 +12,7 @@ import timer
 import custom_functions
 import multiprocessing
 import os
+import ctypes
 
 def load_CUDA():
     import pycuda.autoinit
@@ -423,6 +424,33 @@ def plot_hr_pipelined(ecg_filenames):
     print "Total:", wall
     plot_process.join()
 
+def plot_hr_cuda(filenames):
+    dll = ctypes.CDLL("plotecg.o")
+    ecgs = [(filename, read_ISHNE(filename)) for filename in filenames]
+    heartrates = []
+    for filename, ecg in ecgs:
+        output = numpy.zeros(len(ecg.leads[0])).astype(numpy.int32)
+        output_p = output.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        indecies = numpy.zeros(len(ecg.leads[0])).astype(numpy.int32)
+        indecies_p = indecies.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
+        output_length = ctypes.c_int(0)
+        output_length_p = ctypes.pointer(output_length)
+        lead1_p = ecg.leads[0].astype(numpy.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        lead2_p = ecg.leads[1].astype(numpy.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        lead3_p = ecg.leads[2].astype(numpy.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
+        sampling_rate = ctypes.c_int(ecg.sampling_rate)
+        lead_length = ctypes.c_int(len(ecg.leads[0]))
+        dll.process(output_p, indecies_p, output_length_p, lead1_p, lead2_p, lead3_p, lead_length, sampling_rate)
+        out_len = output_length.value
+        heartrates.append((filename, indecies[:out_len], output[:out_len]))
+    for filename, indecies, hr in heartrates:
+        plt.plot(indecies, hr, label=filename)
+    plt.legend()
+    plt.title("ECG - RR")
+    plt.xlabel("Hours")
+    plt.ylabel("Heartrate (BPM)")
+    plt.show()
+
 def main():
     parser = argparse.ArgumentParser(description="plot ECG data")
     parser.add_argument("ecg", type=str, nargs="+", help="ECG file to process")
@@ -434,7 +462,7 @@ def main():
                             help="plot RR data")
     args = parser.parse_args()
     if args.plot_heartrate:
-        plot_hr_many(args.ecg)
+        plot_hr_cuda(args.ecg)
     else:
         plot_leads(args.ecg, args.leads)
 
