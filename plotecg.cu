@@ -227,6 +227,7 @@ void get_hr(int * out_samples,
   size_t reduced_size;
   int compacted_length;
   size_t compacted_size;
+  double start, end;
 
   // Init
   checkCuda( cudaSetDevice(0) );
@@ -244,6 +245,8 @@ void get_hr(int * out_samples,
   checkCuda( cudaMalloc((void **) & d_corr1, lead_size) );
   checkCuda( cudaMalloc((void **) & d_corr2, lead_size) );
   checkCuda( cudaMalloc((void **) & d_corr3, lead_size) );
+
+  start = get_time();
 
   // Transfer leads
   // TODO add streaming
@@ -392,6 +395,8 @@ void get_hr(int * out_samples,
   out_rr_values[0] = out_rr_values[1];
   // Set the output length
   * out_length = compacted_length;
+  end = get_time();
+  printf("Total: %lf ms.", (end - start) / 1000.0);
 }
 
 extern "C" {

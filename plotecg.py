@@ -443,8 +443,10 @@ def plot_hr_cuda(filenames):
         dll.process(indecies_p, output_p, output_length_p, lead1_p, lead2_p, lead3_p, lead_length, sampling_rate)
         out_len = output_length.value
         indecies = indecies[:out_len]
+        output = output[:out_len]
+        output = output[indecies > 10]
         indecies = indecies[indecies > 10]
-        heartrates.append((filename, indecies[:-250], output[:len(indecies) - 250]))
+        heartrates.append((filename, indecies[:-2100], output[:-2100]))
     for filename, indecies, hr in heartrates:
         plt.plot(indecies / float(3600 * 50), hr, label=filename)
     plt.legend()
