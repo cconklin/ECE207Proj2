@@ -12,6 +12,7 @@ void turning_point_compress(float *, float *, int);
 struct tp_arg {
   uint16_t * output;
   float * input;
+  float * inter;
   int len;
 };
 

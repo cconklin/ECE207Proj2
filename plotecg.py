@@ -440,11 +440,13 @@ def plot_hr_cuda(filenames):
         lead3_p = ecg.leads[2].astype(numpy.float32).ctypes.data_as(ctypes.POINTER(ctypes.c_float))
         sampling_rate = ctypes.c_int(ecg.sampling_rate)
         lead_length = ctypes.c_int(len(ecg.leads[0]))
-        dll.process(output_p, indecies_p, output_length_p, lead1_p, lead2_p, lead3_p, lead_length, sampling_rate)
+        dll.process(indecies_p, output_p, output_length_p, lead1_p, lead2_p, lead3_p, lead_length, sampling_rate)
         out_len = output_length.value
-        heartrates.append((filename, indecies[:out_len], output[:out_len]))
+        indecies = indecies[:out_len]
+        indecies = indecies[indecies > 10]
+        heartrates.append((filename, indecies[:-250], output[:len(indecies) - 250]))
     for filename, indecies, hr in heartrates:
-        plt.plot(indecies, hr, label=filename)
+        plt.plot(indecies / float(3600 * 50), hr, label=filename)
     plt.legend()
     plt.title("ECG - RR")
     plt.xlabel("Hours")
