@@ -446,7 +446,7 @@ def plot_hr_cuda(filenames):
         output = output[:out_len]
         output = output[indecies > 10]
         indecies = indecies[indecies > 10]
-        heartrates.append((filename, indecies[:-2500], output[:-2500]))
+        heartrates.append((filename, indecies[:-300], output[:-300]))
     for filename, indecies, hr in heartrates:
         plt.plot(indecies / float(3600 * (ecg.sampling_rate / 4)), hr, label=filename)
     plt.legend()
