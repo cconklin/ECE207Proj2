@@ -3,7 +3,6 @@
 #include <thrust/device_vector.h>
 #include <thrust/scan.h>
 #include <pthread.h>
-#include "barrier.h"
 #include "cuda_runtime.h"
 
 #include <stdint.h>
@@ -37,48 +36,45 @@ double get_time(void) {
   return (double)t.tv_sec*1000000.0 + ((double)t.tv_usec);
 }
 
-double elapsed_time(double start_time, double end_time) {
-  // Get the elapsed time
-  return ((end_time - start_time) / 1000.0);
+inline void to_fp16(uint16_t * out, float * in, int len) {
+  int i;
+  for (i = 0; i < len; i++) {
+    out[i] = half_float::detail::float2half<std::round_indeterminate>(in[i]);
+  }
 }
 
-pthread_barrier_t compress_barrier;
-pthread_barrierattr_t compress_barrier_attr;
-
-void turning_point_compress(uint16_t * output,
-                            float * input,
-                            float * inter,
-                            int input_len)
+inline void turning_point_compress(float * output, float * input, int input_len)
 {
   int idx;
-  int output_len = input_len / 4;
-  int inter_len = input_len / 2;
-  inter[0] = input[0];
-  for (idx = 1; idx < inter_len; idx++) {
-    if ((input[2*idx]-inter[idx-1])*(input[2*idx+1]-input[2*idx]) < 0) {
-      inter[idx] = input[2*idx];
-    } else {
-      inter[idx] = input[2*idx+1];
-    }
-  }
-  pthread_barrier_wait(& compress_barrier);
-  output[0] = inter[0];
+  int output_len = input_len / 2;
+  output[0] = input[0];
   for (idx = 1; idx < output_len; idx++) {
-    if ((inter[2*idx]-output[idx-1])*(inter[2*idx+1]-inter[2*idx]) < 0) {
-      output[idx] = half_float::detail::float2half<std::round_indeterminate>(inter[2*idx]);
+    if ((input[2*idx]-output[idx-1])*(input[2*idx+1]-input[2*idx]) < 0) {
+      output[idx] = input[2*idx];
     } else {
-      output[idx] = half_float::detail::float2half<std::round_indeterminate>(inter[2*idx+1]);
+      output[idx] = input[2*idx+1];
     }
   }
 }
+
+struct tp_arg {
+  uint16_t * output;
+  float * input;
+  float * inter;
+  float * cinter;
+  int len;
+};
 
 void * tp_worker(void * _args) {
   struct tp_arg * args = (struct tp_arg *) _args;
   uint16_t * output = args -> output;
   float * input = args -> input;
   float * inter = args -> inter;
+  float * cinter = args -> cinter;
   int len = args -> len;
-  turning_point_compress(output, input, inter, len);
+  turning_point_compress(inter, input, len);
+  turning_point_compress(cinter, inter, len / 2);
+  to_fp16(output, cinter, len / 4);
   pthread_exit(NULL);
 }
 
@@ -88,18 +84,20 @@ void parallel_turning_point_compress(uint16_t * output,
 {
   int num_threads = 8;
   int tid;
-  float * inter = (float *) malloc(input_len / 2 * sizeof(float));
-  assert(inter);
   struct tp_arg thread_args[num_threads];
   pthread_t threads[num_threads];
   pthread_attr_t th_attr;
-  pthread_barrier_init(& compress_barrier, & compress_barrier_attr, num_threads);
   pthread_attr_init(&th_attr);
   pthread_attr_setdetachstate(&th_attr, PTHREAD_CREATE_JOINABLE);
   int chunk_size = input_len / num_threads;
+  float * inter = (float *) malloc((input_len * sizeof(float)) / 2);
+  float * cinter = (float *) malloc((input_len * sizeof(float)) / 4);
+  assert(inter);
+  assert(cinter);
   for (tid = 0; tid < num_threads; tid++) {
-    (&thread_args[tid]) -> output = & output[chunk_size * tid / 4];
-    (&thread_args[tid]) -> inter = & inter[chunk_size * tid / 2];
+    (&thread_args[tid]) -> output = & output[(chunk_size * tid) / 4];
+    (&thread_args[tid]) -> cinter = & cinter[(chunk_size * tid) / 4];
+    (&thread_args[tid]) -> inter = & inter[(chunk_size * tid) / 2];
     (&thread_args[tid]) -> input = & input[chunk_size * tid];
     (&thread_args[tid]) -> len = chunk_size;
     pthread_create(&threads[tid], &th_attr, tp_worker, (void *) & thread_args[tid]);
@@ -107,9 +105,9 @@ void parallel_turning_point_compress(uint16_t * output,
   for (tid = 0; tid < num_threads; tid++) {
     pthread_join(threads[tid], NULL);
   }
-  pthread_barrier_destroy(& compress_barrier);
   pthread_attr_destroy(&th_attr);
   free(inter);
+  free(cinter);
 }
 
 void inclusive_scan(int * out, int * in, int len) {
@@ -218,7 +216,7 @@ void get_hr(int * out_samples,
   int * d_filtered;
   int merged_length;
   // Still hardcoded...
-  float threshold_value = 0.5;
+  float threshold_value = 0.3;
   int threads_per_block = 200;
   int num_blocks = lead_length / threads_per_block;
   int chunk_length = sampling_rate * 2;
