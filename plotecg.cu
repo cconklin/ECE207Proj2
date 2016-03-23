@@ -329,7 +329,6 @@ void get_hr(int * out_samples,
   checkCuda( cudaMalloc((void **) & d_masks, reduced_size) );
   checkCuda( cudaMalloc((void **) & d_indecies, reduced_size) );
   checkCuda( cudaMemset(d_masks, 0, reduced_size) );
-  // TODO: is this needed?
   checkCuda( cudaMemset(d_indecies, 0, reduced_size) );
   // reduction kernel
   KERNEL(index_of_peak)(d_indecies, d_masks, d_edge);
@@ -414,13 +413,12 @@ extern "C" {
     float * d_wavelet;
     int num_blocks = 1;
     int threads_per_block = wavelet_length;
-    double start, end;
+    double start, compress, end;
 
     checkCuda( cudaMalloc((void **) & d_wavelet, wavelet_size) );
     KERNEL(mexican_hat)(d_wavelet, sigma, minval, (maxval - minval)/wavelet_length);
 
     // Compress leads
-    // FIXME compress 4x, not 2x
 
     int compressed_lead_length = lead_length / 4;
     size_t compressed_lead_size = compressed_lead_length * sizeof(uint16_t);
@@ -440,12 +438,19 @@ extern "C" {
     parallel_turning_point_compress(compressed_lead2, lead2, lead_length);
     parallel_turning_point_compress(compressed_lead3, lead3, lead_length);
 
+    compress = get_time();
+
     // Call get_hr
 
     get_hr(out_hr, out_samples, out_length, compressed_lead1, compressed_lead2, compressed_lead3, compressed_lead_length, d_wavelet, wavelet_length, sampling_rate);
 
     end = get_time();
+    printf("Compression: %lf ms.\n", (compress - start) / 1000.0);
     printf("Total: %lf ms.\n", (end - start) / 1000.0);
+
+    free(compressed_lead1);
+    free(compressed_lead2);
+    free(compressed_lead3);
 
   }
 }

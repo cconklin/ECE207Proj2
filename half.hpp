@@ -1438,7 +1438,7 @@ namespace half_float
 				}
 //				if(z < 8.0)
 					return expr(static_cast<float>(lgamma(static_cast<double>(arg))));
-				return expr(static_cast<float>(0.5*(1.8378770664093454835606594728112-std::log(z))+z*(std::log(z+1.0/(12.0*z-1.0/(10.0*z)-1.0))-1.0)));
+        // return expr(static_cast<float>(0.5*(1.8378770664093454835606594728112-std::log(z))+z*(std::log(z+1.0/(12.0*z-1.0/(10.0*z)-1.0))-1.0)));
 			#endif
 			}
 
@@ -1465,7 +1465,7 @@ namespace half_float
 					return expr(arg);
 //				if(arg < 8.0f)
 					return expr(static_cast<float>(std::exp(lgamma(z))));
-				return expr(static_cast<float>(std::sqrt(6.283185307179586476925286766559/z)*std::pow(0.36787944117144232159552377016146*(z+1.0/(12.0*z-1.0/(10.0*z))), z)));
+        // return expr(static_cast<float>(std::sqrt(6.283185307179586476925286766559/z)*std::pow(0.36787944117144232159552377016146*(z+1.0/(12.0*z-1.0/(10.0*z))), z)));
 			#endif
 			}
 
