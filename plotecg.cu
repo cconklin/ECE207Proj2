@@ -396,7 +396,7 @@ void get_hr(int * out_samples,
   // Set the output length
   * out_length = compacted_length;
   end = get_time();
-  printf("Total: %lf ms.", (end - start) / 1000.0);
+  printf("Total: %lf ms.\n", (end - start) / 1000.0);
 }
 
 extern "C" {
