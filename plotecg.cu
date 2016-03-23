@@ -227,7 +227,6 @@ void get_hr(int * out_samples,
   size_t reduced_size;
   int compacted_length;
   size_t compacted_size;
-  double start, end;
 
   // Init
   checkCuda( cudaSetDevice(0) );
@@ -245,8 +244,6 @@ void get_hr(int * out_samples,
   checkCuda( cudaMalloc((void **) & d_corr1, lead_size) );
   checkCuda( cudaMalloc((void **) & d_corr2, lead_size) );
   checkCuda( cudaMalloc((void **) & d_corr3, lead_size) );
-
-  start = get_time();
 
   // Transfer leads
   // TODO add streaming
@@ -395,8 +392,6 @@ void get_hr(int * out_samples,
   out_rr_values[0] = out_rr_values[1];
   // Set the output length
   * out_length = compacted_length;
-  end = get_time();
-  printf("Total: %lf ms.\n", (end - start) / 1000.0);
 }
 
 extern "C" {
@@ -419,6 +414,7 @@ extern "C" {
     float * d_wavelet;
     int num_blocks = 1;
     int threads_per_block = wavelet_length;
+    double start, end;
 
     checkCuda( cudaMalloc((void **) & d_wavelet, wavelet_size) );
     KERNEL(mexican_hat)(d_wavelet, sigma, minval, (maxval - minval)/wavelet_length);
@@ -437,6 +433,8 @@ extern "C" {
     compressed_lead3 = (uint16_t *) malloc(compressed_lead_size);
     assert(compressed_lead3);
 
+    start = get_time();
+
     // Losing our QRS all of a sudden...
     parallel_turning_point_compress(compressed_lead1, lead1, lead_length);
     parallel_turning_point_compress(compressed_lead2, lead2, lead_length);
@@ -445,6 +443,9 @@ extern "C" {
     // Call get_hr
 
     get_hr(out_hr, out_samples, out_length, compressed_lead1, compressed_lead2, compressed_lead3, compressed_lead_length, d_wavelet, wavelet_length, sampling_rate);
+
+    end = get_time();
+    printf("Total: %lf ms.\n", (end - start) / 1000.0);
 
   }
 }
