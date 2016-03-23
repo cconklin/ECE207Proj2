@@ -29,34 +29,6 @@ cudaError_t _checkCuda(cudaError_t result, int l, const char * f)
   return result;
 }
 
-void threshold_ecg(float * output1,
-                   float * output2,
-                   float * output3,
-                   float * samples,
-                   int * output_len,
-                   float * input1,
-                   float * input2,
-                   float * input3,
-                   int input_len,
-                   float threshold)
-{
-  float neg_threshold = - threshold;
-  int i = 0;
-  int idx = 0;
-  for (i = 0; i < input_len; i++) {
-    float val1 = input1[i];
-    float val2 = input2[i];
-    float val3 = input3[i];
-    if (val1 < neg_threshold || val1 > threshold) {
-      output1[idx] = val1;
-      output2[idx] = val2;
-      output3[idx] = val3;
-      samples[idx++] = i;
-    }
-  }
-  * output_len = idx;
-}
-
 double get_time(void) {
   struct timeval t;
 
@@ -64,33 +36,45 @@ double get_time(void) {
   return (double)t.tv_sec*1000000.0 + ((double)t.tv_usec);
 }
 
-double elapsed_time(double start_time, double end_time) {
-  // Get the elapsed time
-  return ((end_time - start_time) / 1000.0);
+inline void to_fp16(uint16_t * out, float * in, int len) {
+  int i;
+  for (i = 0; i < len; i++) {
+    out[i] = half_float::detail::float2half<std::round_indeterminate>(in[i]);
+  }
 }
 
-void turning_point_compress(uint16_t * output,
-                            float * input,
-                            int input_len)
+inline void turning_point_compress(float * output, float * input, int input_len)
 {
   int idx;
   int output_len = input_len / 2;
   output[0] = input[0];
   for (idx = 1; idx < output_len; idx++) {
     if ((input[2*idx]-output[idx-1])*(input[2*idx+1]-input[2*idx]) < 0) {
-      output[idx] = half_float::detail::float2half<std::round_indeterminate>(input[2*idx]);
+      output[idx] = input[2*idx];
     } else {
-      output[idx] = half_float::detail::float2half<std::round_indeterminate>(input[2*idx+1]);
+      output[idx] = input[2*idx+1];
     }
   }
 }
+
+struct tp_arg {
+  uint16_t * output;
+  float * input;
+  float * inter;
+  float * cinter;
+  int len;
+};
 
 void * tp_worker(void * _args) {
   struct tp_arg * args = (struct tp_arg *) _args;
   uint16_t * output = args -> output;
   float * input = args -> input;
+  float * inter = args -> inter;
+  float * cinter = args -> cinter;
   int len = args -> len;
-  turning_point_compress(output, input, len);
+  turning_point_compress(inter, input, len);
+  turning_point_compress(cinter, inter, len / 2);
+  to_fp16(output, cinter, len / 4);
   pthread_exit(NULL);
 }
 
@@ -106,8 +90,14 @@ void parallel_turning_point_compress(uint16_t * output,
   pthread_attr_init(&th_attr);
   pthread_attr_setdetachstate(&th_attr, PTHREAD_CREATE_JOINABLE);
   int chunk_size = input_len / num_threads;
+  float * inter = (float *) malloc((input_len * sizeof(float)) / 2);
+  float * cinter = (float *) malloc((input_len * sizeof(float)) / 4);
+  assert(inter);
+  assert(cinter);
   for (tid = 0; tid < num_threads; tid++) {
-    (&thread_args[tid]) -> output = & output[chunk_size * tid / 2];
+    (&thread_args[tid]) -> output = & output[(chunk_size * tid) / 4];
+    (&thread_args[tid]) -> cinter = & cinter[(chunk_size * tid) / 4];
+    (&thread_args[tid]) -> inter = & inter[(chunk_size * tid) / 2];
     (&thread_args[tid]) -> input = & input[chunk_size * tid];
     (&thread_args[tid]) -> len = chunk_size;
     pthread_create(&threads[tid], &th_attr, tp_worker, (void *) & thread_args[tid]);
@@ -116,6 +106,8 @@ void parallel_turning_point_compress(uint16_t * output,
     pthread_join(threads[tid], NULL);
   }
   pthread_attr_destroy(&th_attr);
+  free(inter);
+  free(cinter);
 }
 
 void inclusive_scan(int * out, int * in, int len) {
@@ -152,11 +144,11 @@ void synchronize_and_merge(int ** merged_out,
   int threads_per_block = 256;
   int num_blocks;
   // Allocate small chunks
-  lead1 = malloc(chunk_size);
+  lead1 = (int *) malloc(chunk_size);
   assert(lead1);
-  lead2 = malloc(chunk_size);
+  lead2 = (int *) malloc(chunk_size);
   assert(lead2);
-  lead3 = malloc(chunk_size);
+  lead3 = (int *) malloc(chunk_size);
   assert(lead3);
   // Copy back
   checkCuda( cudaMemcpy(lead1, d_lead1, chunk_size, cudaMemcpyDeviceToHost) );
@@ -189,13 +181,18 @@ void synchronize_and_merge(int ** merged_out,
   num_blocks = sync_length / threads_per_block;
   * merged_length_out = num_blocks * threads_per_block;
   // Allocate the output
-  checkCuda( cudaMalloc((void **) merged_out), * merged_length_out * sizeof(int) );
+  checkCuda( cudaMalloc((void **) merged_out, * merged_length_out * sizeof(int)) );
   // Merge kernel
   KERNEL(merge_leads)(* merged_out, d_lead1, offset1, d_lead2, offset2, d_lead3, offset3);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
 }
 
-void get_hr(float ** out_samples,
-            float ** out_rr_values,
+float transfer_time, decompress_time, preprocess_time, rr_time, filter_time, returntransfer_time;
+
+void get_hr(int * out_samples,
+            int * out_rr_values,
+            int * out_length,
             uint16_t * compressed_lead_1,
             uint16_t * compressed_lead_2,
             uint16_t * compressed_lead_3,
@@ -207,12 +204,11 @@ void get_hr(float ** out_samples,
   size_t lead_size = lead_length * sizeof(float);
   size_t int_lead_size = lead_length * sizeof(int);
   size_t compressed_lead_size = lead_length * sizeof(uint16_t);
-  size_t wavelet_size = wavelet_length * sizeof(float);
   uint16_t * d_clead1, * d_clead2, * d_clead3;
   float * d_lead1, * d_lead2, * d_lead3;
   float * d_corr1, * d_corr2, * d_corr3;
   int * d_thresh1, * d_thresh2, * d_thresh3;
-  float * d_merged;
+  int * d_merged;
   int * d_edge;
   int * d_masks;
   int * d_indecies;
@@ -222,15 +218,27 @@ void get_hr(float ** out_samples,
   int * d_filtered;
   int merged_length;
   // Still hardcoded...
-  float threshold_value = 0.5;
+  float threshold_value = 0.3;
   int threads_per_block = 200;
-  int num_blocks = lead_size / threads_per_block;
+  int num_blocks = lead_length / threads_per_block;
   int chunk_length = sampling_rate * 2;
   int reduce_by = 32;
   int reduced_length;
   size_t reduced_size;
   int compacted_length;
   size_t compacted_size;
+  cudaEvent_t pretransfer, posttransfer, decompress, preprocess, rr, filter, returntransfer;
+
+  // Init
+  checkCuda( cudaSetDevice(0) );
+
+  cudaEventCreate(&pretransfer);
+  cudaEventCreate(&posttransfer);
+  cudaEventCreate(&decompress);
+  cudaEventCreate(&preprocess);
+  cudaEventCreate(&rr);
+  cudaEventCreate(&filter);
+  cudaEventCreate(&returntransfer);
 
   // Allocate leads
   // Compressed
@@ -248,16 +256,25 @@ void get_hr(float ** out_samples,
 
   // Transfer leads
   // TODO add streaming
+  cudaEventRecord(pretransfer, 0);
   checkCuda( cudaMemcpy(d_clead1, compressed_lead_1, compressed_lead_size, cudaMemcpyHostToDevice) );
   checkCuda( cudaMemcpy(d_clead2, compressed_lead_2, compressed_lead_size, cudaMemcpyHostToDevice) );
   checkCuda( cudaMemcpy(d_clead3, compressed_lead_3, compressed_lead_size, cudaMemcpyHostToDevice) );
+  cudaEventRecord(posttransfer, 0);
 
   // Preprocess kernels
 
   // "Decompress" on GPU (16 bit float to 32 bit float)
-  KERNEL(to_float)(d_lead1, d_clead1, lead_length);
-  KERNEL(to_float)(d_lead1, d_clead1, lead_length);
-  KERNEL(to_float)(d_lead1, d_clead1, lead_length);
+  KERNEL(to_float)(d_lead1, (half *) d_clead1, lead_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
+  KERNEL(to_float)(d_lead2, (half *) d_clead2, lead_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
+  KERNEL(to_float)(d_lead3, (half *) d_clead3, lead_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
+  cudaEventRecord(decompress, 0);
 
   // Free unneeded memory
   cudaFree(d_clead1);
@@ -266,8 +283,14 @@ void get_hr(float ** out_samples,
 
   // Cross-Correlate with wavelet
   KERNEL(cross_correlate_with_wavelet)(d_corr1, d_lead1, d_wavelet, lead_length, wavelet_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
   KERNEL(cross_correlate_with_wavelet)(d_corr2, d_lead2, d_wavelet, lead_length, wavelet_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
   KERNEL(cross_correlate_with_wavelet)(d_corr3, d_lead3, d_wavelet, lead_length, wavelet_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
   // Free unneeded memory
   cudaFree(d_lead1);
   cudaFree(d_lead2);
@@ -281,26 +304,37 @@ void get_hr(float ** out_samples,
   checkCuda( cudaMalloc((void **) & d_thresh3, int_lead_size) );
   // Threshold Kernel
   KERNEL(threshold)(d_thresh1, d_corr1, threshold_value);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
   KERNEL(threshold)(d_thresh2, d_corr2, threshold_value);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
   KERNEL(threshold)(d_thresh3, d_corr3, threshold_value);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
   // Free unneeded memory
   cudaFree(d_corr1);
   cudaFree(d_corr2);
   cudaFree(d_corr3);
 
   // Synchronize and Merge 3 Leads
-  // TODO define this
+  // FIXME outputs an array of sparse 2's (not 1's)
   synchronize_and_merge(& d_merged, & merged_length, d_thresh1, d_thresh2, d_thresh3, lead_length, chunk_length);
   // Free unneeded memory
   cudaFree(d_thresh1);
   cudaFree(d_thresh2);
   cudaFree(d_thresh3);
 
+  cudaEventRecord(preprocess, 0);
+
   // Heartrate kernels
+  checkCuda( cudaMalloc((void **) & d_edge, merged_length * sizeof(int)) );
   reduced_length = merged_length / reduce_by;
   reduced_size = reduced_length * sizeof(int);
   num_blocks = merged_length / threads_per_block;
   KERNEL(edge_detect)(d_edge, d_merged, merged_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
   // Free unneeded memory
   cudaFree(d_merged);
 
@@ -309,10 +343,11 @@ void get_hr(float ** out_samples,
   checkCuda( cudaMalloc((void **) & d_masks, reduced_size) );
   checkCuda( cudaMalloc((void **) & d_indecies, reduced_size) );
   checkCuda( cudaMemset(d_masks, 0, reduced_size) );
-  // TODO: is this needed?
   checkCuda( cudaMemset(d_indecies, 0, reduced_size) );
   // reduction kernel
   KERNEL(index_of_peak)(d_indecies, d_masks, d_edge);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
   // Free unneeded memory
   cudaFree(d_edge);
 
@@ -329,39 +364,135 @@ void get_hr(float ** out_samples,
   num_blocks = (compacted_length / threads_per_block) + 1;
   cudaMalloc((void **) & d_scatter, compacted_size);
   KERNEL(scatter)(d_scatter, d_indecies, d_scan, d_masks, compacted_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
   // Free unneeded memory
   cudaFree(d_scan);
-  cudaFree(d_mask);
+  cudaFree(d_masks);
 
   // Get heartrate
   cudaMalloc((void **) & d_rr, compacted_size);
   KERNEL(get_compact_rr)(d_rr, d_scatter, sampling_rate, compacted_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
+
+  cudaEventRecord(rr, 0);
+
   // Remove all values outside the range (40..140) starting at point 1 (i.e. ignore point 0)
   KERNEL(clean_result)(d_rr, 140, 40, 1, compacted_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
 
   // Moving average filter
   cudaMalloc((void **) & d_filtered, compacted_size);
-  // Reuse memory in d_scatter (it's just the right size)
-  d_scan = d_scatter;
+  cudaMalloc((void **) & d_scan, compacted_size);
   exclusive_scan(d_scan, d_rr, compacted_length);
   // use a 250 point window for the moving average
   KERNEL(moving_average)(d_filtered, d_scan, 250, compacted_length);
+  checkCuda( cudaDeviceSynchronize() );
+  checkCuda( cudaGetLastError() );
   // Free unneeded memory
   cudaFree(d_scan);
   cudaFree(d_rr);
 
+  cudaEventRecord(filter, 0);
+
   // Transfer back to host
-  // Allocate space on host
-  * out_samples = (int *) malloc(compacted_size);
-  assert(* out_samples);
-  * out_rr_values = (int *) malloc(compacted_size);
-  assert(* out_rr_values);
   // Copy back
-  checkCuda( cudaMemcpy(out_samples, d_indecies, compacted_size, cudaMemcpyDeviceToHost) );
+  checkCuda( cudaMemcpy(out_samples, d_scatter, compacted_size, cudaMemcpyDeviceToHost) );
   checkCuda( cudaMemcpy(out_rr_values, d_filtered, compacted_size, cudaMemcpyDeviceToHost) );
+  cudaEventRecord(returntransfer, 0);
+
   // Free unneeded memory
   cudaFree(d_indecies);
+  cudaFree(d_scatter);
   cudaFree(d_filtered);
   // Correct first value of output heartrate (it's always wrong)
-  (* out_rr_values)[0] = (* out_rr_values)[1];
+  out_rr_values[0] = out_rr_values[1];
+  // Set the output length
+  * out_length = compacted_length;
+
+  cudaEventElapsedTime(&transfer_time, pretransfer, posttransfer);
+  cudaEventElapsedTime(&decompress_time, posttransfer, decompress);
+  cudaEventElapsedTime(&preprocess_time, decompress, preprocess);
+  cudaEventElapsedTime(&rr_time, preprocess, rr);
+  cudaEventElapsedTime(&filter_time, rr, filter);
+  cudaEventElapsedTime(&returntransfer_time, filter, returntransfer);
+
+  // Destroy events
+  cudaEventDestroy(pretransfer);
+  cudaEventDestroy(posttransfer);
+  cudaEventDestroy(decompress);
+  cudaEventDestroy(preprocess);
+  cudaEventDestroy(rr);
+  cudaEventDestroy(filter);
+  cudaEventDestroy(returntransfer);
+}
+
+extern "C" {
+  void process(int * out_hr,
+               int * out_samples,
+               int * out_length,
+               float * lead1,
+               float * lead2,
+               float * lead3,
+               int lead_length,
+               int sampling_rate)
+  {
+    // Calculate wavelet
+    sampling_rate = sampling_rate / 4;
+    int wavelet_length = ((int) (0.08 * ((float) sampling_rate))) + 2;
+    size_t wavelet_size = wavelet_length * sizeof(float);
+    float sigma = 1.0;
+    float maxval = 4 * sigma;
+    float minval = -maxval;
+    float * d_wavelet;
+    int num_blocks = 1;
+    int threads_per_block = wavelet_length;
+    double start, compress, end;
+
+    checkCuda( cudaMalloc((void **) & d_wavelet, wavelet_size) );
+    KERNEL(mexican_hat)(d_wavelet, sigma, minval, (maxval - minval)/wavelet_length);
+
+    // Compress leads
+
+    int compressed_lead_length = lead_length / 4;
+    size_t compressed_lead_size = compressed_lead_length * sizeof(uint16_t);
+    uint16_t * compressed_lead1, * compressed_lead2, * compressed_lead3;
+
+    compressed_lead1 = (uint16_t *) malloc(compressed_lead_size);
+    assert(compressed_lead1);
+    compressed_lead2 = (uint16_t *) malloc(compressed_lead_size);
+    assert(compressed_lead2);
+    compressed_lead3 = (uint16_t *) malloc(compressed_lead_size);
+    assert(compressed_lead3);
+
+    start = get_time();
+
+    // Losing our QRS all of a sudden...
+    parallel_turning_point_compress(compressed_lead1, lead1, lead_length);
+    parallel_turning_point_compress(compressed_lead2, lead2, lead_length);
+    parallel_turning_point_compress(compressed_lead3, lead3, lead_length);
+
+    compress = get_time();
+
+    // Call get_hr
+
+    get_hr(out_hr, out_samples, out_length, compressed_lead1, compressed_lead2, compressed_lead3, compressed_lead_length, d_wavelet, wavelet_length, sampling_rate);
+
+    end = get_time();
+    printf("Compression: %lf ms.\n", (compress - start) / 1000.0);
+    printf("Transfer (to GPU): %f ms.\n", transfer_time);
+    printf("Decompress: %f ms.\n", decompress_time);
+    printf("Preprocess: %f ms.\n", preprocess_time);
+    printf("RR: %f ms.\n", rr_time);
+    printf("Filter: %f ms.\n", filter_time);
+    printf("Transfer (from GPU): %f ms.\n", returntransfer_time);
+    printf("Total: %lf ms.\n", (end - start) / 1000.0);
+
+    free(compressed_lead1);
+    free(compressed_lead2);
+    free(compressed_lead3);
+
+  }
 }
