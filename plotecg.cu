@@ -188,6 +188,8 @@ void synchronize_and_merge(int ** merged_out,
   checkCuda( cudaGetLastError() );
 }
 
+float transfer_time, decompress_time, preprocess_time, rr_time, filter_time, returntransfer_time;
+
 void get_hr(int * out_samples,
             int * out_rr_values,
             int * out_length,
@@ -225,9 +227,18 @@ void get_hr(int * out_samples,
   size_t reduced_size;
   int compacted_length;
   size_t compacted_size;
+  cudaEvent_t pretransfer, posttransfer, decompress, preprocess, rr, filter, returntransfer;
 
   // Init
   checkCuda( cudaSetDevice(0) );
+
+  cudaEventCreate(&pretransfer);
+  cudaEventCreate(&posttransfer);
+  cudaEventCreate(&decompress);
+  cudaEventCreate(&preprocess);
+  cudaEventCreate(&rr);
+  cudaEventCreate(&filter);
+  cudaEventCreate(&returntransfer);
 
   // Allocate leads
   // Compressed
@@ -245,9 +256,11 @@ void get_hr(int * out_samples,
 
   // Transfer leads
   // TODO add streaming
+  cudaEventRecord(pretransfer, 0);
   checkCuda( cudaMemcpy(d_clead1, compressed_lead_1, compressed_lead_size, cudaMemcpyHostToDevice) );
   checkCuda( cudaMemcpy(d_clead2, compressed_lead_2, compressed_lead_size, cudaMemcpyHostToDevice) );
   checkCuda( cudaMemcpy(d_clead3, compressed_lead_3, compressed_lead_size, cudaMemcpyHostToDevice) );
+  cudaEventRecord(posttransfer, 0);
 
   // Preprocess kernels
 
@@ -261,6 +274,7 @@ void get_hr(int * out_samples,
   KERNEL(to_float)(d_lead3, (half *) d_clead3, lead_length);
   checkCuda( cudaDeviceSynchronize() );
   checkCuda( cudaGetLastError() );
+  cudaEventRecord(decompress, 0);
 
   // Free unneeded memory
   cudaFree(d_clead1);
@@ -311,6 +325,8 @@ void get_hr(int * out_samples,
   cudaFree(d_thresh2);
   cudaFree(d_thresh3);
 
+  cudaEventRecord(preprocess, 0);
+
   // Heartrate kernels
   checkCuda( cudaMalloc((void **) & d_edge, merged_length * sizeof(int)) );
   reduced_length = merged_length / reduce_by;
@@ -360,6 +376,8 @@ void get_hr(int * out_samples,
   checkCuda( cudaDeviceSynchronize() );
   checkCuda( cudaGetLastError() );
 
+  cudaEventRecord(rr, 0);
+
   // Remove all values outside the range (40..140) starting at point 1 (i.e. ignore point 0)
   KERNEL(clean_result)(d_rr, 140, 40, 1, compacted_length);
   checkCuda( cudaDeviceSynchronize() );
@@ -377,10 +395,14 @@ void get_hr(int * out_samples,
   cudaFree(d_scan);
   cudaFree(d_rr);
 
+  cudaEventRecord(filter, 0);
+
   // Transfer back to host
   // Copy back
   checkCuda( cudaMemcpy(out_samples, d_scatter, compacted_size, cudaMemcpyDeviceToHost) );
   checkCuda( cudaMemcpy(out_rr_values, d_filtered, compacted_size, cudaMemcpyDeviceToHost) );
+  cudaEventRecord(returntransfer, 0);
+
   // Free unneeded memory
   cudaFree(d_indecies);
   cudaFree(d_scatter);
@@ -389,6 +411,22 @@ void get_hr(int * out_samples,
   out_rr_values[0] = out_rr_values[1];
   // Set the output length
   * out_length = compacted_length;
+
+  cudaEventElapsedTime(&transfer_time, pretransfer, posttransfer);
+  cudaEventElapsedTime(&decompress_time, posttransfer, decompress);
+  cudaEventElapsedTime(&preprocess_time, decompress, preprocess);
+  cudaEventElapsedTime(&rr_time, preprocess, rr);
+  cudaEventElapsedTime(&filter_time, rr, filter);
+  cudaEventElapsedTime(&returntransfer_time, filter, returntransfer);
+
+  // Destroy events
+  cudaEventDestroy(pretransfer);
+  cudaEventDestroy(posttransfer);
+  cudaEventDestroy(decompress);
+  cudaEventDestroy(preprocess);
+  cudaEventDestroy(rr);
+  cudaEventDestroy(filter);
+  cudaEventDestroy(returntransfer);
 }
 
 extern "C" {
@@ -444,6 +482,12 @@ extern "C" {
 
     end = get_time();
     printf("Compression: %lf ms.\n", (compress - start) / 1000.0);
+    printf("Transfer (to GPU): %f ms.\n", transfer_time);
+    printf("Decompress: %f ms.\n", decompress_time);
+    printf("Preprocess: %f ms.\n", preprocess_time);
+    printf("RR: %f ms.\n", rr_time);
+    printf("Filter: %f ms.\n", filter_time);
+    printf("Transfer (from GPU): %f ms.\n", returntransfer_time);
     printf("Total: %lf ms.\n", (end - start) / 1000.0);
 
     free(compressed_lead1);

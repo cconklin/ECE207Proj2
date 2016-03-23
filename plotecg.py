@@ -429,6 +429,8 @@ def plot_hr_cuda(filenames):
     ecgs = [(filename, read_ISHNE(filename)) for filename in filenames]
     heartrates = []
     for filename, ecg in ecgs:
+        print os.path.basename(filename)
+        print "-------"
         output = numpy.zeros(len(ecg.leads[0])).astype(numpy.int32)
         output_p = output.ctypes.data_as(ctypes.POINTER(ctypes.c_int))
         indecies = numpy.zeros(len(ecg.leads[0])).astype(numpy.int32)
@@ -446,7 +448,10 @@ def plot_hr_cuda(filenames):
         output = output[:out_len]
         output = output[indecies > 10]
         indecies = indecies[indecies > 10]
-        heartrates.append((filename, indecies[:-300], output[:-300]))
+        indecies = indecies[output > 10]
+        output = output[output > 10]
+        heartrates.append((filename, indecies[:-9000], output[:-9000]))
+        print "-------"
     for filename, indecies, hr in heartrates:
         plt.plot(indecies / float(3600 * (ecg.sampling_rate / 4)), hr, label=filename)
     plt.legend()
